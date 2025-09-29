@@ -4,7 +4,11 @@ from PIL import Image
 class JpegCompressor:
     """Класс JPEG-компрессора.
     
-    Attributes: -
+    Attributes:
+        _original_pixels (np.ndarray): Исходное изображение в виде матрицы пикселей
+        _pixels (np.ndarray): Текущее состояние изображения в процессе обработки
+        original_image_path (str): Путь к исходному файлу изображения
+        quality (int): Качество сжатия от 1 до 100
     """
     
     
@@ -35,9 +39,9 @@ class JpegCompressor:
         self._pixels = np.zeros_like(self._original_pixels)
         
         # Разделяем каналы RGB
-        R = self._original_pixels[:, :, 0]
-        G = self._original_pixels[:, :, 1]
-        B = self._original_pixels[:, :, 2]
+        R = self._original_pixels[:, :, 0].copy()
+        G = self._original_pixels[:, :, 1].copy()
+        B = self._original_pixels[:, :, 2].copy()
         
         # Преобразование в YCbCr согласно стандарту JPEG
         # Компонента Y (яркость)
@@ -56,6 +60,10 @@ class JpegCompressor:
         self._pixels[:, :, 0] = Y
         self._pixels[:, :, 1] = Cb
         self._pixels[:, :, 2] = Cr
+        
+        # Протестируем
+        # pixels_uint8 = np.clip(self._pixels, 0, 255).astype(np.uint8)
+        # Image.fromarray(pixels_uint8).save("data/output_1.jpeg")
         
 
     def _chroma_subsampling(self, ratio='4:2:0'):
@@ -118,6 +126,6 @@ class JpegCompressor:
         self.quality = None
         
 
-    def jpeg_compress(self, compressed_image_name: str):
+    def compress(self, compressed_image_name: str):
         """Основной метод сжатия"""
         pass
