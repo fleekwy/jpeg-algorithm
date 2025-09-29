@@ -27,7 +27,36 @@ class JpegCompressor:
 
     def _rgb_to_ycbcr(self):
         """Конвертация RGB в YCbCr"""
-        pass
+        
+        if self._original_pixels is None:
+            raise ValueError("Сначала загрузите изображение с помощью load_image()")
+        
+        # Создаем пустой массив для YCbCr
+        self._pixels = np.zeros_like(self._original_pixels)
+        
+        # Разделяем каналы RGB
+        R = self._original_pixels[:, :, 0]
+        G = self._original_pixels[:, :, 1]
+        B = self._original_pixels[:, :, 2]
+        
+        # Преобразование в YCbCr согласно стандарту JPEG
+        # Компонента Y (яркость)
+        Y = 0.299 * R + 0.587 * G + 0.114 * B
+        
+        # Компоненты Cb и Cr (цветность)
+        Cb = 128 - 0.168736 * R - 0.331264 * G + 0.5 * B
+        Cr = 128 + 0.5 * R - 0.418688 * G - 0.081312 * B
+        
+        # Ограничение по стандарту JPEG
+        Y = np.clip(Y, 16, 235)
+        Cb = np.clip(Cb, 16, 240)
+        Cr = np.clip(Cr, 16, 240)
+        
+        # Сохраняем в поле self._pixels
+        self._pixels[:, :, 0] = Y
+        self._pixels[:, :, 1] = Cb
+        self._pixels[:, :, 2] = Cr
+        
 
     def _chroma_subsampling(self, ratio='4:2:0'):
         """Хроматическое прореживание"""
