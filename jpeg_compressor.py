@@ -2,23 +2,25 @@ import numpy as np
 from PIL import Image
 
 class JpegCompressor:
+    """Класс JPEG-компрессора.
+    
+    Attributes: -
+    """
+    
     
 # private 
     
-    def __init__(self, image_path: str):
+    def __init__(self, image_path=None):
+        """Первоначальная инициализация состояния объекта"""
         
-        self.original_image_path = image_path
+        self._original_pixels = None
+        self._pixels = None
         
-        try:
-            self.original_image = Image.open(self.original_image_path)
-            
-        except Exception as e:
-            print(f"Ошибка загрузки изображения: {e}")
-            raise
+        self.original_image_path = None
+        self.quality = None
         
-        self.original_data = np.array(self.original_image)
-        self.compressed_data = None
-        self.compressed_image = None    
+        if image_path:
+            self.load_image(image_path)
         
         
 # protected
@@ -54,6 +56,39 @@ class JpegCompressor:
     
 # public
 
-    def compress(self, compressed_image_path: str):
+    def load_image(self, image_path, quality=75):
+        """Загрузка изображения. Сбрасывает предыдущее состояние"""
+        
+        # Сбрасываем все предыдущие данные
+        self._reset_state()
+        
+        try:
+            # Загружаем новое изображение
+            image = Image.open(image_path)
+            
+            # Убеждаемся, что исходная цветовая модель = RGB
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+                
+            # Преобразуем изображение в числовую матрицу для дальнейших преобразований
+            self._original_pixels = np.array(image, dtype=np.float32)
+            self._pixels = np.copy(self._original_pixels)
+            
+            self.original_image_path = image_path
+            self.quality = quality
+            
+        except Exception as e:
+            self._reset_state()
+            raise ValueError(f"Ошибка загрузки изображения: {e}")
+        
+        
+    def _reset_state(self):
+        self._original_pixels = None
+        self._pixels = None
+        self.original_image_path = None
+        self.quality = None
+        
+
+    def jpeg_compress(self, compressed_image_name: str):
         """Основной метод сжатия"""
         pass
