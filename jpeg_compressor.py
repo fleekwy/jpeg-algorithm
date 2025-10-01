@@ -87,7 +87,7 @@ class JpegCompressor:
         """Квантование DCT-коэффициентов"""
         pass
     
-    def _dc_differential(self, quantized):
+    def _dc_differentiation(self, quantized):
         """Дифференциальное кодирование DC-коэффициентов"""
         pass
 
