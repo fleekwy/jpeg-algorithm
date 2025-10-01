@@ -23,6 +23,16 @@ def test1():
     except Exception as e:
         print(f"❌ Ошибка преобразования: {e}")
         
+    try:
+        rgb = compressor._original_pixels.copy()
+        ycbcr_pixels = compressor._rgb_to_ycbcr(rgb)
+        subsampled = compressor._chroma_subsampling(ycbcr_pixels)
+        print("✅ Прореживание YCbCr-массива выполнено")
+        print(f"   Размер: {subsampled.shape}")
+    except Exception as e:
+        print(f"❌ Ошибка прореживания: {e}")
+        
+        
 
 if __name__ == "__main__":
     test1()

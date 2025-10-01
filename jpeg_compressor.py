@@ -70,10 +70,61 @@ class JpegCompressor:
         print("_rgb_to_ycbcr:  <end>\n")
         return ycbcr_pixels
         
-
-    def _chroma_subsampling(self, ratio='4:2:0'):
-        """Хроматическое прореживание"""
-        pass
+    
+    def _chroma_subsampling(self, ycbcr_pixels):
+        """Хроматическое прореживание 4:2:0 с паддингом и усреднением"""
+    
+        print("_chroma_subsampling:  <start>")
+    
+        Y = ycbcr_pixels[:, :, 0]
+        Cb = ycbcr_pixels[:, :, 1]
+        Cr = ycbcr_pixels[:, :, 2]
+        
+        original_height, original_width = Y.shape
+        
+        # Вычисляем размеры с паддингом
+        padded_height = original_height + (original_height % 2)
+        padded_width = original_width + (original_width % 2)
+        
+        # Создаем массивы с паддингом
+        Y_padded = np.zeros((padded_height, padded_width), dtype=np.float32)
+        Cb_padded = np.zeros((padded_height, padded_width), dtype=np.float32)
+        Cr_padded = np.zeros((padded_height, padded_width), dtype=np.float32)
+        
+        # Копируем оригинальные данные
+        Y_padded[:original_height, :original_width] = Y
+        Cb_padded[:original_height, :original_width] = Cb
+        Cr_padded[:original_height, :original_width] = Cr
+        
+        # Дублируем граничные пиксели для паддинга
+        if original_height < padded_height:
+            Y_padded[original_height:, :] = Y_padded[original_height-1:original_height, :]
+            Cb_padded[original_height:, :] = Cb_padded[original_height-1:original_height, :]
+            Cr_padded[original_height:, :] = Cr_padded[original_height-1:original_height, :]
+        
+        if original_width < padded_width:
+            Y_padded[:, original_width:] = Y_padded[:, original_width-1:original_width]
+            Cb_padded[:, original_width:] = Cb_padded[:, original_width-1:original_width]
+            Cr_padded[:, original_width:] = Cr_padded[:, original_width-1:original_width]
+        
+        # Теперь работаем с четными размерами
+        Cb_blocks = Cb_padded.reshape(padded_height//2, 2, padded_width//2, 2)
+        Cb_subsampled = np.mean(Cb_blocks, axis=(1, 3))
+        
+        Cr_blocks = Cr_padded.reshape(padded_height//2, 2, padded_width//2, 2)
+        Cr_subsampled = np.mean(Cr_blocks, axis=(1, 3))
+        
+        # Создаем выходной массив с паддингом
+        subsampled_padded = np.zeros((padded_height, padded_width, 3), dtype=np.float32)
+        subsampled_padded[:, :, 0] = Y_padded
+        subsampled_padded[:, :, 1] = np.repeat(np.repeat(Cb_subsampled, 2, axis=0), 2, axis=1)
+        subsampled_padded[:, :, 2] = np.repeat(np.repeat(Cr_subsampled, 2, axis=0), 2, axis=1)
+        
+        # Обрезаем обратно до оригинальных размеров
+        subsampled = subsampled_padded[:original_height, :original_width, :]
+        
+        return subsampled
+        
     
     def _split_into_blocks(self, subsampled):
         """Разбиение на блоки 8x8"""
@@ -151,4 +202,10 @@ class JpegCompressor:
 
     def compress(self, compressed_image_name: str):
         """Основной метод сжатия"""
-        pass
+        
+        if self._original_pixels is None:
+            raise ValueError("Сначала загрузите изображение с помощью load_image()")
+            
+        rgb_pixels = self._original_pixels
+        ycbcr_pixels = self._rgb_to_ycbcr(rgb_pixels)
+        subsampled = self._chroma_subsampling(ycbcr_pixels)
