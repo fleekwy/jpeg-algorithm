@@ -476,9 +476,13 @@ class JpegCompressor:
         except Exception as e:
             raise RuntimeError(f"Quantization Error: {e}")
         
-        # try:
-        #     dict_dc_diff = self._dc_differentiation(dict_quant_blocks)
-        #     self.logger.debug(f"DC-differentiation: success")
+        try:
+            dict_dc_diff = self._dc_differentiation(dict_quant_blocks)
+            self.logger.debug(f"""
+    DC-differentiation: success
+    Size of diff-Y: {dict_dc_diff['Y_dc_diff'].shape}
+    First eight diff components:
+        {dict_dc_diff['Y_dc_diff'][:8]}""")
             
-        # except Exception as e:
-        #     raise RuntimeError(f"DC-differentiation Error: {e}")
+        except Exception as e:
+            raise RuntimeError(f"DC-differentiation Error: {e}")
