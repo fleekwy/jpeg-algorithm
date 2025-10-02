@@ -22,7 +22,26 @@ class JpegCompressor:
         self._original_pixels = None
         self._compressed_pixels = None
         self.quality = None
-        self.DCT_matrix = self._create_dct_matrix(8)
+        self.DCT_MATRIX = self._create_dctII_matrix(8)
+        self.STANDARD_LUMINANCE_QUANT_TABLE = np.array([
+            [16, 11, 10, 16, 24, 40, 51, 61],
+            [12, 12, 14, 19, 26, 58, 60, 55],
+            [14, 13, 16, 24, 40, 57, 69, 56],
+            [14, 17, 22, 29, 51, 87, 80, 62],
+            [18, 22, 37, 56, 68,109,103, 77],
+            [24, 35, 55, 64, 81,104,113, 92],
+            [49, 64, 78, 87,103,121,120,101],
+            [72, 92, 95, 98,112,100,103, 99]], dtype=np.uint8)
+
+        self.STANDARD_CHROMINANCE_QUANT_TABLE = np.array([
+            [17, 18, 24, 47, 99, 99, 99, 99],
+            [18, 21, 26, 66, 99, 99, 99, 99],
+            [24, 26, 56, 99, 99, 99, 99, 99],
+            [47, 66, 99, 99, 99, 99, 99, 99],
+            [99, 99, 99, 99, 99, 99, 99, 99],
+            [99, 99, 99, 99, 99, 99, 99, 99],
+            [99, 99, 99, 99, 99, 99, 99, 99],
+            [99, 99, 99, 99, 99, 99, 99, 99]], dtype=np.uint8)
         
         if image_path:
             self.load_image(image_path)
@@ -31,13 +50,30 @@ class JpegCompressor:
         
         
 # protected
-    def _create_dct_matrix(self, N):
+
+    def _create_dctII_matrix(self, N):
         dct_mat = np.zeros((N, N))
         for k in range(N):
             for n in range(N):
                 coef = np.sqrt(1/N) if k == 0 else np.sqrt(2/N)
                 dct_mat[k, n] = coef * np.cos(np.pi * (2*n + 1) * k / (2 * N))
-        return dct_mat
+        return dct_mat.astype('float32')
+    
+    
+    def _scale_quant_table(self, table, quality):
+        if quality < 50:
+            scale = 5000 / quality
+        else:
+            scale = 200 - 2 * quality
+            
+        #print(f"{scale=}")
+
+        # ВАЖНО: привести к float32, чтобы избежать переполнения
+        table = table.astype(np.float32)
+
+        scaled = np.floor((table * scale + 50) / 100)
+        return np.clip(scaled, 1, 255).astype(np.uint8)
+
 
 
     def _rgb_to_ycbcr(self, rgb_pixels):
@@ -214,9 +250,9 @@ class JpegCompressor:
     
     def _dct(self, block):
         """Применяет 2D DCT к одному блоку 8x8. Возвращает блок 8x8 DCT коэффициентов"""
-        return self.DCT_matrix @ block @ self.DCT_matrix.T
+        return self.DCT_MATRIX @ block @ self.DCT_MATRIX.T
     
-    
+
     def _apply_dct(self, blocks_data):
         """Применяет DCT ко всем блокам всех каналов"""
         
@@ -247,14 +283,39 @@ class JpegCompressor:
             'Cb_dct': Cb_dct, 
             'Cr_dct': Cr_dct,
         }
-
-    def _quantization(self, dct_block, channel_type='Y'):
-        """Квантование DCT-коэффициентов"""
-        pass
+   
     
-    def _apply_quantization(self, data):
-        """"""
-        pass
+    def _apply_quantization(self, dct_blocks):
+        """Применяет квантование ко всем DCT-блокам всех каналов"""
+
+        print(f"\n_apply_quantization: <start>")
+
+        Y_dct = dct_blocks['Y_dct']
+        Cb_dct = dct_blocks['Cb_dct']
+        Cr_dct = dct_blocks['Cr_dct']
+
+        num_blocks_h, num_blocks_w = Y_dct.shape[:2]
+
+        # Создаем массивы для квантованных коэффициентов
+        Y_quant = np.zeros_like(Y_dct, dtype=np.int32)
+        Cb_quant = np.zeros_like(Cb_dct, dtype=np.int32)
+        Cr_quant = np.zeros_like(Cr_dct, dtype=np.int32)
+
+        # Применяем квантование к каждому блоку
+        for i in range(num_blocks_h):
+            for j in range(num_blocks_w):
+                Y_quant[i, j] = np.round(Y_dct[i, j] / self._scale_quant_table(self.STANDARD_LUMINANCE_QUANT_TABLE, self.quality).astype(np.float32)).astype(np.int32)
+                Cb_quant[i, j] = np.round(Cb_dct[i, j] / self._scale_quant_table(self.STANDARD_CHROMINANCE_QUANT_TABLE, self.quality).astype(np.float32)).astype(np.int32)
+                Cr_quant[i, j] = np.round(Cr_dct[i, j] / self._scale_quant_table(self.STANDARD_CHROMINANCE_QUANT_TABLE, self.quality).astype(np.float32)).astype(np.int32)
+
+        print("_apply_quantization: <end>\n")
+
+        return {
+            'Y_quant': Y_quant,
+            'Cb_quant': Cb_quant,
+            'Cr_quant': Cr_quant
+        }
+    
     
     def _dc_differentiation(self, quantized):
         """Дифференциальное кодирование DC-коэффициентов"""
@@ -329,3 +390,4 @@ class JpegCompressor:
         subsampled = self._chroma_subsampling(ycbcr_pixels)
         dict_blocks = self._split_into_blocks(subsampled)
         dict_dct_blocks = self._apply_dct(dict_blocks)
+        dict_quant_blocks = self._apply_quantization(dict_dct_blocks)
