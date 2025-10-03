@@ -53,6 +53,9 @@ class JpegCompressor:
             [99, 99, 99, 99, 99, 99, 99, 99],
             [99, 99, 99, 99, 99, 99, 99, 99]], dtype=np.uint8)
         
+        self.dc_freq = {}  # для категорий DC: 0..11
+        self.ac_freq = {} # 162 возможных кода AC (по JPEG)
+        
         self.logger.info("__init__: <end>")
         
     def _setup_logger(self, disable_file=False):
@@ -407,28 +410,89 @@ class JpegCompressor:
             'Cr_quant': Cr_quant
         }
 
+    def _value_to_bits(self, value: int) -> str:
+        """Преобразует значение коэффициента в 'сырые' биты (по JPEG)."""
+        if value == 0:
+            return ""
+        size = int(math.floor(math.log2(abs(value)))) + 1
+        if value > 0:
+            return format(value, f"0{size}b")
+        else:
+            max_val = (1 << size) - 1
+            return format(value + max_val, f"0{size}b")
+
     @log_step
     def _dc_differentiation(self, quantized):
-        """Дифференциальное кодирование DC-коэффициентов"""
+        """
+        Выполняет дифференциальное кодирование (DPCM) DC-коэффициентов
+        для всех компонент (Y, Cb, Cr) и преобразует их в пары (SIZE, VALUE_BITS),
+        а также параллельно собирает информацию о частотах DC-компонент в словарь.
+
+        Args:
+            quantized (dict): {
+                'Y_quant': np.ndarray,
+                'Cb_quant': np.ndarray,
+                'Cr_quant': np.ndarray
+            }
+            
+            Size: (m, n, 8, 8), [0, 0] — DC-component.
+
+        Returns:
+            dict: {
+                'Y_dc_encoded': list,  # [{'size': int, 'value_bits': str}, ...]
+                'Cb_dc_encoded': list, # [{'size': int, 'value_bits': str}, ...]
+                'Cr_dc_encoded': list  # [{'size': int, 'value_bits': str}, ...]
+            }
+
+            - **size (int)**: Количество бит, необходимое для представления
+                дифференциала.
+            - **value_bits (str)**: Строковое представление битов
+                дифференциала (с учетом инверсии для отрицательных чисел)
+        """
 
         def diff_dc(blocks):
-            # Извлекаем DC-компоненты всех блоков (заранее преобразовав блок 8х8 в одномерный массив с поомщью flatten())
             dc = blocks[:, :, 0, 0].flatten()
-            # Дифференциальное кодирование (первый элемент берём как есть)
             return np.diff(np.insert(dc, 0, 0))
+
+        def encode_dc_stream(dc_diff_array):
+            encoded = []
+
+            for diff in dc_diff_array:
+                if diff == 0:
+                    size = 0
+                    value_bits = ""
+                else:
+                    size = int(math.floor(math.log2(abs(diff))) + 1)
+                    value_bits = self._value_to_bits(diff)
+
+                # собираем частоты в словарь
+                self.dc_freq[size] = self.dc_freq.get(size, 0) + 1
+
+                encoded.append({"size": size, "value_bits": value_bits})
+            return encoded
+
+        Y_diff = diff_dc(quantized['Y_quant'])
+        Cb_diff = diff_dc(quantized['Cb_quant'])
+        Cr_diff = diff_dc(quantized['Cr_quant'])
         
+        Y_dc_encoded = encode_dc_stream(Y_diff)
+        Cb_dc_encoded = encode_dc_stream(Cb_diff)
+        Cr_dc_encoded = encode_dc_stream(Cr_diff)
+
         self.logger.debug(f"""
     DC-differentiation: Success
-    Size of diff-Y: {diff_dc(quantized['Y_quant']).shape[0]}
-    First eight diff components:
-        {diff_dc(quantized['Y_quant'])[:8]}""")
-        
-        return {
-            'Y_dc_diff': diff_dc(quantized['Y_quant']),
-            'Cb_dc_diff': diff_dc(quantized['Cb_quant']),
-            'Cr_dc_diff': diff_dc(quantized['Cr_quant']),
-        }
+    Size of diff-Y: {Y_diff.shape[0]}
+    First eight diff-Y components:
+        {Y_diff[:8]}
+    First eight diff-encoded-Y components:
+        {Y_dc_encoded[:8]}
+        """)
 
+        return {
+            'Y_dc_encoded': Y_dc_encoded,
+            'Cb_dc_encoded': Cb_dc_encoded,
+            'Cr_dc_encoded': Cr_dc_encoded,
+        }
 
     def _zigzag_scanning(self, block):
         """Зигзаг-сканирование одного блока NxN"""
@@ -466,19 +530,20 @@ class JpegCompressor:
                     
         return result
 
-    def _value_to_bits(self, value: int) -> str:
-        """Преобразует значение коэффициента в 'сырые' биты (по JPEG)."""
-        if value == 0:
-            return ""
-        size = int(math.floor(math.log2(abs(value)))) + 1
-        if value > 0:
-            return format(value, f"0{size}b")
-        else:
-            max_val = (1 << size) - 1
-            return format(value + max_val, f"0{size}b")
-
     def _run_length_encoding(self, ac_coeffs):
-        """Выполняет JPEG RLE-кодирование AC-коэффициентов: (run, size) + битовое значение."""
+        """
+        Выполняет JPEG RLE-кодирование AC-коэффициентов: (RUN, SIZE) + битовое значение.
+        Также автоматически собирает статистику частот в словаре self.ac_freq_dict.
+
+        Args:
+            ac_coeffs (np.ndarray): Массив AC-коэффициентов одного блока (после зигзага, исключая DC)
+
+        Returns:
+            dict: {
+                'rle': list of (RUN, SIZE) пар,
+                'values': list of битовых строк для коэффициентов
+            }
+        """
         rle = []
         values = []
         zero_run = 0
@@ -487,39 +552,66 @@ class JpegCompressor:
             if coeff == 0:
                 zero_run += 1
                 if zero_run == 16:
-                    rle.append((15, 0))  # ZRL
+                    # ZRL (Zero Run Length)
+                    symbol = (15, 0)
+                    rle.append(symbol)
                     values.append("")
+
+                    # Считаем частоту
+                    self.ac_freq[symbol] = self.ac_freq.get(symbol, 0) + 1
+
                     zero_run = 0
             else:
                 size = int(math.floor(math.log2(abs(coeff)))) + 1
-                rle.append((zero_run, size))
+                symbol = (zero_run, size)
+                rle.append(symbol)
                 values.append(self._value_to_bits(coeff))
+
+                # Считаем частоту
+                self.ac_freq[symbol] = self.ac_freq.get(symbol, 0) + 1
+
                 zero_run = 0
 
         # Если остались нули в конце блока → EOB
         if zero_run > 0:
-            rle.append((0, 0))  # EOB
+            symbol = (0, 0)  # EOB
+            rle.append(symbol)
             values.append("")
-
-    #     self.logger.debug(f"""
-    # RLE-encoding: Success
-    # Size of AC_coeffs-array: {len(ac_coeffs)}
-    # AC_coeffs:
-    #     {[int(el) for el in ac_coeffs]}
-
-    # Size of RLE-array: {len(rle)}
-    # RLE-array:
-    #     {rle}
-    # values:
-    #     {values}
-    # """)
+            self.ac_freq[symbol] = self.ac_freq.get(symbol, 0) + 1
 
         return {"rle": rle, "values": values}
 
 
     @log_step
     def _encode_rle_ac_components(self, quantized):
-        """Применяет зигзаг и RLE к AC-компонентам всех блоков"""
+        """
+        Применяет зигзагообразное сканирование и RLE к AC-коэффициентам.
+
+        Для всех квантованных блоков (Y, Cb, Cr) функция извлекает 
+        AC-коэффициенты (исключая DC), выполняет RLE-кодирование (Run-Length
+        Encoding) и подготавливает данные для кодирования Хаффмана.
+
+        Args:
+            quantized (dict): {
+                'Y_quant': np.ndarray,
+                'Cb_quant': np.ndarray,
+                'Cr_quant': np.ndarray
+            }
+            
+            Size: (m, n, 8, 8), [0, 0] — DC-component (исключается).
+
+        Returns:
+            dict: {
+                'Y_ac_rle': list,  # [{'rle': list, 'values': list}, ...]
+                'Cb_ac_rle': list, # [{'rle': list, 'values': list}, ...]
+                'Cr_ac_rle': list  # [{'rle': list, 'values': list}, ...]
+            }
+
+            - **rle (list)**: Список пар (RUN, SIZE). RUN — количество нулей, 
+              SIZE — количество бит для ненулевого коэффициента.
+            - **values (list)**: Список строковых представлений битов
+              ненулевых AC-коэффициентов (амплитуд).
+        """
     
         def process_channel(channel_blocks):
             h, w = channel_blocks.shape[:2]
@@ -545,6 +637,13 @@ class JpegCompressor:
         {Y_ac_rle[0]["rle"]}
     values:
         {Y_ac_rle[0]["values"]}
+    One dict:
+        {Y_ac_rle[0]}
+    """)
+        
+        self.logger.debug(f"""
+    DC-components frequency = {self.dc_freq}
+    AC-components frequency = {self.ac_freq}
     """)
 
         return {
@@ -552,11 +651,48 @@ class JpegCompressor:
             'Cb_ac_rle': Cb_ac_rle,
             'Cr_ac_rle': Cr_ac_rle,
         }
-
+    
     @log_step
-    def _huffman_encoding(self, rle_data):
-        """Хаффман-кодирование"""
-        pass
+    def _huffman_encoding(self, dc_components, ac_components, huffman_tables):
+        """Хаффман-кодирование DC и AC-компонентов по JPEG-таблицам"""
+
+        def encode_channel(dc_list, ac_list, dc_table, ac_table):
+            bitstream = ""
+            for i in range(len(dc_list)):
+                # --- DC ---
+                size = dc_list[i]["size"]
+                value_bits = dc_list[i]["value_bits"]
+                huff_dc = dc_table[size]
+                bitstream += huff_dc + value_bits
+
+                # --- AC ---
+                rle_pairs = ac_list[i]["rle"]
+                value_bits_list = ac_list[i]["values"]
+                for (run, size), value_bits in zip(rle_pairs, value_bits_list):
+                    huff_ac = ac_table.get((run, size), "")
+                    bitstream += huff_ac + value_bits
+            return bitstream
+
+        # Кодируем каждый канал
+        Y_bits = encode_channel(dc_components["Y_dc_encoded"], ac_components["Y_ac_rle"], huffman_tables["DC_Y"], huffman_tables["AC_Y"])
+        Cb_bits = encode_channel(dc_components["Cb_dc_encoded"], ac_components["Cb_ac_rle"], huffman_tables["DC_C"], huffman_tables["AC_C"])
+        Cr_bits = encode_channel(dc_components["Cr_dc_encoded"], ac_components["Cr_ac_rle"], huffman_tables["DC_C"], huffman_tables["AC_C"])
+
+        self.logger.debug(f"""
+    Huffman encoding: Success
+    Y bits length: {len(Y_bits)}
+    Cb bits length: {len(Cb_bits)}
+    Cr bits length: {len(Cr_bits)}
+    First 64 bits of Y:
+        {Y_bits[:64]}
+    """)
+
+        return {
+            "Y_bits": Y_bits,
+            "Cb_bits": Cb_bits,
+            "Cr_bits": Cr_bits,
+            "full_bitstream": Y_bits + Cb_bits + Cr_bits
+        }
     
     @log_step
     def _create_jpeg(self, encoded_data, output_path):
@@ -586,6 +722,7 @@ class JpegCompressor:
             self._reset_state()
             raise ValueError(f"Image loading Error: {e}")
     
+    
 # public
 
     @log_step
@@ -600,7 +737,9 @@ class JpegCompressor:
         dict_blocks = self._split_into_blocks(subsampled)
         dict_dct_blocks = self._apply_dct(dict_blocks)
         dict_quant_blocks = self._apply_quantization(dict_dct_blocks)
-        dict_dc_diff = self._dc_differentiation(dict_quant_blocks)
+        dc_components = self._dc_differentiation(dict_quant_blocks)
         #one_zigzag_Y_array = self._zigzag_scanning(dict_quant_blocks['Y_quant'][0][0])
         #one_rle_array = self._run_length_encoding(one_zigzag_Y_array[1:])
-        dict_list_dict_rle_values = self._encode_rle_ac_components(dict_quant_blocks)
+        ac_components = self._encode_rle_ac_components(dict_quant_blocks)
+        #self._huffman_encoding(self, dc_components, ac_components, huffman_tables)
+            
