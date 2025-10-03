@@ -14,8 +14,13 @@ def test_scale():
     
 def test():
     compressor = JpegCompressor()
-    compressor.load_image("data/test_image_2.jpg")
-    compressor.compress("output")
+    compressor.compress("data/test_image_2.jpg", "output_test_image_2")
+
+def test_rle():
+    compressor = JpegCompressor()
+    ac=[0, 8, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    res=compressor._run_length_encoding(ac)
+    print(res["rle"])
 
 if __name__ == "__main__":
     test()
