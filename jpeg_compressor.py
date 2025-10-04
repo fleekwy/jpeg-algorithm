@@ -53,8 +53,31 @@ class JpegCompressor:
             [99, 99, 99, 99, 99, 99, 99, 99],
             [99, 99, 99, 99, 99, 99, 99, 99]], dtype=np.uint8)
         
-        self.dc_freq = {}  # для категорий DC: 0..11
-        self.ac_freq = {} # 162 возможных кода AC (по JPEG)
+        self.STANDARD_DC_TABLE = {
+            0: '00',
+            1: '010',
+            2: '011',
+            3: '100',
+            4: '101',
+            5: '110',
+            6: '1110',
+            7: '11110',
+            8: '111110',
+            9: '1111110',
+            10: '11111110',
+            11: '111111110'
+        }
+        
+        # для категорий DC: 0..11
+        self.dc_freq = {
+                'Y' : {},
+                'C' : {}
+            }
+        # 162 возможных кода AC (по JPEG)
+        self.ac_freq = {
+                'Y' : {},
+                'C' : {}
+            }
         
         self.logger.info("__init__: <end>")
         
@@ -126,6 +149,54 @@ class JpegCompressor:
                 coef = np.sqrt(1/N) if k == 0 else np.sqrt(2/N)
                 dct_mat[k, n] = coef * np.cos(np.pi * (2*n + 1) * k / (2 * N))
         return dct_mat.astype('float32')
+    
+    @log_step
+    def _build_huffman_table(self, freq_dict):
+        """Строит Хаффман-таблицу из словаря частот"""
+        import heapq
+
+        heap = [[weight, [symbol, ""]] for symbol, weight in freq_dict.items() if weight > 0]
+        heapq.heapify(heap)
+
+        while len(heap) > 1:
+            lo = heapq.heappop(heap)
+            hi = heapq.heappop(heap)
+            for pair in lo[1:]:
+                pair[1] = '0' + pair[1]
+            for pair in hi[1:]:
+                pair[1] = '1' + pair[1]
+            heapq.heappush(heap, [lo[0] + hi[0]] + lo[1:] + hi[1:])
+
+        return {symbol: code for symbol, code in heap[0][1:]}
+
+    @log_step
+    def _generate_all_huffman_tables(self):
+        """Генерирует 4 таблицы Хаффмана: DC_Y, DC_C, AC_Y, AC_C"""
+
+        # DC таблицы: категории 0–11
+        dc_y_table = self._build_huffman_table(self.dc_freq['Y'])
+        dc_c_table = self._build_huffman_table(self.dc_freq['C'])
+
+        # AC таблицы: пары (run, size)
+        ac_y_table = self._build_huffman_table(self.ac_freq['Y'])
+        ac_c_table = self._build_huffman_table(self.ac_freq['C'])
+
+        huffman_tables = {
+            "DC_Y": dc_y_table,
+            "DC_C": dc_c_table,
+            "AC_Y": ac_y_table,
+            "AC_C": ac_c_table
+        }
+
+        self.logger.debug(f"""
+    Generation Huffman tables: Success
+    DC_Y_table size: {len(dc_y_table)}
+    AC_Y_table size: {len(ac_y_table)}
+    DC_Y_table: {dict(list(dc_y_table.items()))}
+    AC_Y_table: {dict(list(ac_y_table.items()))}
+    """)
+        
+        return huffman_tables
     
     def _scale_quant_table(self, table, quality):
         if quality < 50:
@@ -454,7 +525,7 @@ class JpegCompressor:
             dc = blocks[:, :, 0, 0].flatten()
             return np.diff(np.insert(dc, 0, 0))
 
-        def encode_dc_stream(dc_diff_array):
+        def encode_dc_stream(dc_diff_array, freq_key):
             encoded = []
 
             for diff in dc_diff_array:
@@ -466,7 +537,7 @@ class JpegCompressor:
                     value_bits = self._value_to_bits(diff)
 
                 # собираем частоты в словарь
-                self.dc_freq[size] = self.dc_freq.get(size, 0) + 1
+                self.dc_freq[freq_key][size] = self.dc_freq[freq_key].get(size, 0) + 1
 
                 encoded.append({"size": size, "value_bits": value_bits})
             return encoded
@@ -475,9 +546,9 @@ class JpegCompressor:
         Cb_diff = diff_dc(quantized['Cb_quant'])
         Cr_diff = diff_dc(quantized['Cr_quant'])
         
-        Y_dc_encoded = encode_dc_stream(Y_diff)
-        Cb_dc_encoded = encode_dc_stream(Cb_diff)
-        Cr_dc_encoded = encode_dc_stream(Cr_diff)
+        Y_dc_encoded = encode_dc_stream(Y_diff, 'Y')
+        Cb_dc_encoded = encode_dc_stream(Cb_diff, 'C')
+        Cr_dc_encoded = encode_dc_stream(Cr_diff, 'C')
 
         self.logger.debug(f"""
     DC-differentiation: Success
@@ -530,7 +601,7 @@ class JpegCompressor:
                     
         return result
 
-    def _run_length_encoding(self, ac_coeffs):
+    def _run_length_encoding(self, ac_coeffs, freq_key):
         """
         Выполняет JPEG RLE-кодирование AC-коэффициентов: (RUN, SIZE) + битовое значение.
         Также автоматически собирает статистику частот в словаре self.ac_freq_dict.
@@ -558,7 +629,7 @@ class JpegCompressor:
                     values.append("")
 
                     # Считаем частоту
-                    self.ac_freq[symbol] = self.ac_freq.get(symbol, 0) + 1
+                    self.ac_freq[freq_key][symbol] = self.ac_freq[freq_key].get(symbol, 0) + 1
 
                     zero_run = 0
             else:
@@ -568,19 +639,18 @@ class JpegCompressor:
                 values.append(self._value_to_bits(coeff))
 
                 # Считаем частоту
-                self.ac_freq[symbol] = self.ac_freq.get(symbol, 0) + 1
+                self.ac_freq[freq_key][symbol] = self.ac_freq[freq_key].get(symbol, 0) + 1
 
                 zero_run = 0
 
         # Если остались нули в конце блока → EOB
-        if zero_run > 0:
+        if zero_run > 0 or len(rle) == 0 or rle[-1] == (15, 0):
             symbol = (0, 0)  # EOB
             rle.append(symbol)
             values.append("")
-            self.ac_freq[symbol] = self.ac_freq.get(symbol, 0) + 1
+            self.ac_freq[freq_key][symbol] = self.ac_freq[freq_key].get(symbol, 0) + 1
 
         return {"rle": rle, "values": values}
-
 
     @log_step
     def _encode_rle_ac_components(self, quantized):
@@ -613,7 +683,7 @@ class JpegCompressor:
               ненулевых AC-коэффициентов (амплитуд).
         """
     
-        def process_channel(channel_blocks):
+        def process_channel(channel_blocks, freq_key):
             h, w = channel_blocks.shape[:2]
             rle_blocks = []
             for i in range(h):
@@ -621,13 +691,13 @@ class JpegCompressor:
                     block = channel_blocks[i, j]
                     zigzag = self._zigzag_scanning(block)
                     ac = zigzag[1:]  # исключаем DC
-                    rle = self._run_length_encoding(ac)
+                    rle = self._run_length_encoding(ac, freq_key)
                     rle_blocks.append(rle)
             return rle_blocks
         
-        Y_ac_rle = process_channel(quantized['Y_quant'])
-        Cb_ac_rle = process_channel(quantized['Cb_quant'])
-        Cr_ac_rle = process_channel(quantized['Cr_quant'])
+        Y_ac_rle = process_channel(quantized['Y_quant'], 'Y')
+        Cb_ac_rle = process_channel(quantized['Cb_quant'], 'C')
+        Cr_ac_rle = process_channel(quantized['Cr_quant'], 'C')
         
         
         self.logger.debug(f"""
@@ -642,8 +712,10 @@ class JpegCompressor:
     """)
         
         self.logger.debug(f"""
-    DC-components frequency = {self.dc_freq}
-    AC-components frequency = {self.ac_freq}
+    DC-Y-components frequency = {dict(sorted(self.dc_freq['Y'].items(), key=lambda x: x[1], reverse=True))}
+    DC-C-components frequency = {dict(sorted(self.dc_freq['C'].items(), key=lambda x: x[1], reverse=True))}
+    AC-Y-components frequency = {dict(sorted(self.ac_freq['Y'].items(), key=lambda x: x[1], reverse=True))}
+    AC-С-components frequency = {dict(sorted(self.ac_freq['C'].items(), key=lambda x: x[1], reverse=True))}
     """)
 
         return {
@@ -683,8 +755,8 @@ class JpegCompressor:
     Y bits length: {len(Y_bits)}
     Cb bits length: {len(Cb_bits)}
     Cr bits length: {len(Cr_bits)}
-    First 64 bits of Y:
-        {Y_bits[:64]}
+    First 512 bits of Y:
+        {Y_bits[:512]}
     """)
 
         return {
@@ -741,5 +813,6 @@ class JpegCompressor:
         #one_zigzag_Y_array = self._zigzag_scanning(dict_quant_blocks['Y_quant'][0][0])
         #one_rle_array = self._run_length_encoding(one_zigzag_Y_array[1:])
         ac_components = self._encode_rle_ac_components(dict_quant_blocks)
-        #self._huffman_encoding(self, dc_components, ac_components, huffman_tables)
+        huffman_tables = self._generate_all_huffman_tables()
+        self._huffman_encoding(dc_components, ac_components, huffman_tables)
             
