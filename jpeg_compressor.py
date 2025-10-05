@@ -763,13 +763,57 @@ class JpegCompressor:
             "Y_bits": Y_bits,
             "Cb_bits": Cb_bits,
             "Cr_bits": Cr_bits,
-            "full_bitstream": Y_bits + Cb_bits + Cr_bits
+            "bitstream": Y_bits + Cb_bits + Cr_bits
         }
     
     @log_step
-    def _create_jpeg(self, encoded_data, output_path):
+    def _create_app0_segment(self): return bytes([0]*3)
+    @log_step
+    def _create_dqt_segments(self): return [bytes([0]*3)]
+    @log_step
+    def _create_sof0_segment(self): return bytes([0]*3)
+    @log_step
+    def _create_dht_segments(self): return [bytes([0]*3)]
+    @log_step
+    def _create_sos_segment(self): return bytes([0]*3)
+    
+    @log_step
+    def _create_jpeg(self, encoded_data: bytes, output_path: str):
         """Создание итогового JPEG файла из закодированных данных"""
-        pass
+        print(output_path)
+        with open(output_path, 'wb') as f:
+            # 1. SOI — Start of Image
+            f.write(b'\xFF\xD8')
+
+            # 2. APP0 — JFIF header
+            f.write(self._create_app0_segment())
+
+            # 3. DQT — Quantization Tables
+            for qt_segment in self._create_dqt_segments():
+                f.write(qt_segment)
+
+            # 4. SOF0 — Start of Frame
+            f.write(self._create_sof0_segment())
+
+            # 5. DHT — Huffman Tables
+            for dht_segment in self._create_dht_segments():
+                f.write(dht_segment)
+
+            # 6. SOS — Start of Scan
+            f.write(self._create_sos_segment())
+            
+            def bits_to_bytes(bitstring):
+                # Дополняем до кратности 8
+                padding = (8 - len(bitstring) % 8) % 8
+                bitstring += '0' * padding
+                return bytes(int(bitstring[i:i+8], 2) for i in range(0, len(bitstring), 8))
+
+            # 7. Image Data — Закодированные данные
+            #f.write(bits_to_bytes(encoded_data))
+
+            # 8. EOI — End of Image
+            f.write(b'\xFF\xD9')
+
     
     @log_step
     def _load_image(self, image_path, quality):
@@ -814,5 +858,6 @@ class JpegCompressor:
         #one_rle_array = self._run_length_encoding(one_zigzag_Y_array[1:])
         ac_components = self._encode_rle_ac_components(dict_quant_blocks)
         huffman_tables = self._generate_all_huffman_tables()
-        self._huffman_encoding(dc_components, ac_components, huffman_tables)
+        bitstream = self._huffman_encoding(dc_components, ac_components, huffman_tables)['bitstream']
+        self._create_jpeg(bitstream, "data/"+compressed_image_name)
             
