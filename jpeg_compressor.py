@@ -82,42 +82,47 @@ class JpegCompressor:
         self.logger.info("__init__: <end>")
         
     def _setup_logger(self, disable_file=False):
-        # Загружаем конфигурацию YAML
-        with open("logging.yaml", "r") as f:
-            config = yaml.safe_load(f)
+        
+            # Загружаем конфигурацию YAML
+            with open("logging.yaml", "r") as f:
+                config = yaml.safe_load(f)
 
-        if disable_file:
-            # Удаляем file-хендлер и ссылки на него
-            config['handlers'].pop('file', None)
-            for logger in config.get('loggers', {}).values():
-                if 'file' in logger.get('handlers', []):
-                    logger['handlers'].remove('file')
+            if disable_file:
+                # Удаляем file-хендлер и ссылки на него
+                config['handlers'].pop('file', None)
+                for logger in config.get('loggers', {}).values():
+                    if 'file' in logger.get('handlers', []):
+                        logger['handlers'].remove('file')
 
-        else: 
-            # Создаём папку logs, если её нет
-            os.makedirs("logs", exist_ok=True)
+            else:
+                # Создаём папку logs, если её нет
+                os.makedirs("logs", exist_ok=True)
 
-            # Формируем базовое имя по дате
-            today = datetime.now().strftime("%Y-%m-%d")
-            base_name = f"debug_log_{today}"
-            ext = ".txt"
-            log_dir = "logs"
-            
-            # Ищем свободное имя: debug_log_2025-10-03.txt, _1.txt, _2.txt и т.д.
-            i = 0
-            while True:
-                suffix = f"_{i}"
-                filename = os.path.join(log_dir, f"{base_name}{suffix}{ext}")
-                if not os.path.exists(filename):
-                    break
-                i += 1
+                # Формируем поддиректорию по дате, например logs_2025-10-04
+                today = datetime.now().strftime("%Y-%m-%d")
+                dated_log_dir = os.path.join("logs", f"logs_{today}")
+                os.makedirs(dated_log_dir, exist_ok=True)
 
-            # Подставляем имя файла в конфиг
-            config['handlers']['file']['filename'] = filename
+                # Базовое имя файла
+                base_name = f"debug_log_{today}"
+                ext = ".txt"
 
-        # Применяем конфигурацию
-        logging.config.dictConfig(config)
-        return logging.getLogger("JPEGCompressor")
+                # Ищем свободное имя: debug_log_2025-10-04.txt, _1.txt, _2.txt и т.д.
+                i = 0
+                while True:
+                    suffix = f"_{i}"
+                    filename = os.path.join(dated_log_dir, f"{base_name}{suffix}{ext}")
+                    if not os.path.exists(filename):
+                        break
+                    i += 1
+
+                # Подставляем имя файла в конфиг
+                config['handlers']['file']['filename'] = filename
+
+            # Применяем конфигурацию
+            logging.config.dictConfig(config)
+            return logging.getLogger("JPEGCompressor")
+
     
     def log_step(func):
         def wrapper(self, *args, **kwargs):
@@ -859,5 +864,5 @@ class JpegCompressor:
         ac_components = self._encode_rle_ac_components(dict_quant_blocks)
         huffman_tables = self._generate_all_huffman_tables()
         bitstream = self._huffman_encoding(dc_components, ac_components, huffman_tables)['bitstream']
-        self._create_jpeg(bitstream, "data/"+compressed_image_name)
+        #self._create_jpeg(bitstream, "data/"+compressed_image_name)
             
