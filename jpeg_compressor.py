@@ -214,7 +214,7 @@ class JpegCompressor:
         return np.clip(scaled, 1, 255).astype(np.uint8)
     
     @log_step
-    def _rgb_to_ycbcr(self, rgb_pixels):
+    def _rgb_to_ycbcr(self, rgb_pixels: np.array):
         """Конвертация RGB в YCbCr"""
         
         self.logger.debug(f"""
@@ -223,19 +223,13 @@ class JpegCompressor:
         {rgb_pixels[0][0]} {rgb_pixels[0][1]}
         {rgb_pixels[1][0]} {rgb_pixels[1][1]}\n""")
         
-        # Создаем пустой массив для YCbCr
-        ycbcr_pixels = np.zeros_like(rgb_pixels)
-        
         # Разделяем каналы RGB
         R = rgb_pixels[:, :, 0].copy()
         G = rgb_pixels[:, :, 1].copy()
         B = rgb_pixels[:, :, 2].copy()
         
         # Преобразование в YCbCr согласно стандарту JPEG
-        # Компонента Y (яркость)
         Y = 0.299 * R + 0.587 * G + 0.114 * B
-        
-        # Компоненты Cb и Cr (цветность)
         Cb = 128 - 0.168736 * R - 0.331264 * G + 0.5 * B
         Cr = 128 + 0.5 * R - 0.418688 * G - 0.081312 * B
         
@@ -244,33 +238,28 @@ class JpegCompressor:
         Cb = np.clip(Cb, 16, 240)
         Cr = np.clip(Cr, 16, 240)
         
-        # Сохраняем в поле self._pixels
-        ycbcr_pixels[:, :, 0] = Y
-        ycbcr_pixels[:, :, 1] = Cb
-        ycbcr_pixels[:, :, 2] = Cr
-        
         # Протестируем
-        # pixels_uint8 = np.clip(self._pixels, 0, 255).astype(np.uint8)
+        # pixels_uint8 = np.clip(ycbcr_pixels, 0, 255).astype(np.uint8)
         # Image.fromarray(pixels_uint8).save("data/output_1.jpeg")
         
         self.logger.debug(f"""
     Transform RGB → YCbCr: Success
-    Size of ycbcr_pixels: {ycbcr_pixels.shape}
-    2x2 block:
-        {ycbcr_pixels[0][0]} {ycbcr_pixels[0][1]}
-        {ycbcr_pixels[1][0]} {ycbcr_pixels[1][1]}\n""")
+    Size of Y: {Y.shape}
+    2x2 Y-block:
+        {Y[0][0]} {Y[0][1]}
+        {Y[1][0]} {Y[1][1]}\n""")
     
-        return ycbcr_pixels
+        return {
+            'Y' : Y,
+            'Cb' : Cb,
+            'Cr' : Cr
+        }
         
     @log_step
-    def _chroma_subsampling(self, ycbcr_pixels):
+    def _chroma_subsampling(self, ycbcr: dict):
         """Хроматическое прореживание 4:2:0 с паддингом и усреднением"""
-    
-        Y = ycbcr_pixels[:, :, 0]
-        Cb = ycbcr_pixels[:, :, 1]
-        Cr = ycbcr_pixels[:, :, 2]
         
-        original_height, original_width = Y.shape
+        original_height, original_width = self._original_pixels.shape[:2]
         
         # Вычисляем размеры с паддингом
         padded_height = original_height + (original_height % 2)
@@ -282,9 +271,9 @@ class JpegCompressor:
         Cr_padded = np.zeros((padded_height, padded_width), dtype=np.float32)
         
         # Копируем оригинальные данные
-        Y_padded[:original_height, :original_width] = Y
-        Cb_padded[:original_height, :original_width] = Cb
-        Cr_padded[:original_height, :original_width] = Cr
+        Y_padded[:original_height, :original_width] = ycbcr['Y']
+        Cb_padded[:original_height, :original_width] = ycbcr['Cb']
+        Cr_padded[:original_height, :original_width] = ycbcr['Cr']
         
         # Дублируем граничные пиксели для паддинга
         if original_height < padded_height:
@@ -304,84 +293,81 @@ class JpegCompressor:
         Cr_blocks = Cr_padded.reshape(padded_height//2, 2, padded_width//2, 2)
         Cr_subsampled = np.mean(Cr_blocks, axis=(1, 3))
         
-        # Создаем выходной массив с паддингом
-        subsampled_padded = np.zeros((padded_height, padded_width, 3), dtype=np.float32)
-        subsampled_padded[:, :, 0] = Y_padded
-        subsampled_padded[:, :, 1] = np.repeat(np.repeat(Cb_subsampled, 2, axis=0), 2, axis=1)
-        subsampled_padded[:, :, 2] = np.repeat(np.repeat(Cr_subsampled, 2, axis=0), 2, axis=1)
-        
-        # Обрезаем обратно до оригинальных размеров
-        subsampled = subsampled_padded[:original_height, :original_width, :]
+        # Яркостный канал (не прореживается)
+        Y_subsampled = Y_padded[:original_height, :original_width]
         
         self.logger.debug(f"""
     YCbCr-array subsample: Success
-    Size of subsampled_pixels: {subsampled.shape}
-    2x2 block:
-        {subsampled[0][0]} {subsampled[0][1]}
-        {subsampled[1][0]} {subsampled[1][1]}\n""")
+    Size of subsampled_pixels: {Y_subsampled.shape}
+    2x2 Y-block:
+        {Y_subsampled[0][0]} {Y_subsampled[0][1]}
+        {Y_subsampled[1][0]} {Y_subsampled[1][1]}\n""")
         
-        return subsampled
+        return {
+        'Y_subsampled' : Y_subsampled,
+        'Cb_subsampled' : Cb_subsampled,
+        'Cr_subsampled' : Cr_subsampled,
+    }
         
     @log_step
-    def _split_into_blocks(self, subsampled):
-        """Разбиение на блоки 8x8 с паддингом"""
-        
-        Y = subsampled[:, :, 0]
-        Cb = subsampled[:, :, 1]
-        Cr = subsampled[:, :, 2]
-        
-        original_height, original_width = Y.shape
-        
-        # Вычисляем размеры с паддингом до кратных 8
-        padded_height = original_height + (8 - original_height % 8) if original_height % 8 != 0 else original_height
-        padded_width = original_width + (8 - original_width % 8) if original_width % 8 != 0 else original_width
-        
-        # Создаем массивы с паддингом (дублируем граничные пиксели)
-        Y_padded = np.zeros((padded_height, padded_width), dtype=np.float32)
-        Cb_padded = np.zeros((padded_height, padded_width), dtype=np.float32)
-        Cr_padded = np.zeros((padded_height, padded_width), dtype=np.float32)
-        
-        Y_padded[:original_height, :original_width] = Y
-        Cb_padded[:original_height, :original_width] = Cb
-        Cr_padded[:original_height, :original_width] = Cr
-        
-        # Заполняем паддинг дублированием граничных пикселей
-        if original_height < padded_height:
-            Y_padded[original_height:, :] = Y_padded[original_height-1:original_height, :]
-            Cb_padded[original_height:, :] = Cb_padded[original_height-1:original_height, :]
-            Cr_padded[original_height:, :] = Cr_padded[original_height-1:original_height, :]
-        
-        if original_width < padded_width:
-            Y_padded[:, original_width:] = Y_padded[:, original_width-1:original_width]
-            Cb_padded[:, original_width:] = Cb_padded[:, original_width-1:original_width]
-            Cr_padded[:, original_width:] = Cr_padded[:, original_width-1:original_width]
-        
-        # Разбиваем на блоки 8x8
-        def split_channel(channel):
+    def _split_into_blocks(self, subsampled: dict):
+        """Разбиение Y, Cb, Cr на блоки 8x8 с индивидуальным паддингом (поддержка 4:2:0)."""
+
+        def pad_channel(channel: np.ndarray) -> np.ndarray:
+            """Добавляет паддинг, чтобы размеры были кратны 8, дублируя граничные пиксели."""
             h, w = channel.shape
-            return channel.reshape(h//8, 8, w//8, 8).transpose(0, 2, 1, 3)
-        
+            padded_h = h + (8 - h % 8) if h % 8 != 0 else h
+            padded_w = w + (8 - w % 8) if w % 8 != 0 else w
+
+            padded = np.zeros((padded_h, padded_w), dtype=np.float32)
+            padded[:h, :w] = channel
+
+            # дублирование нижней и правой границ
+            if h < padded_h:
+                padded[h:, :] = padded[h-1:h, :]
+            if w < padded_w:
+                padded[:, w:] = padded[:, w-1:w]
+
+            return padded
+
+        def split_channel(channel: np.ndarray) -> np.ndarray:
+            """Разбивает канал на блоки 8x8."""
+            h, w = channel.shape
+            return channel.reshape(h // 8, 8, w // 8, 8).transpose(0, 2, 1, 3)
+
+        # Обработка каждого канала отдельно
+        Y = subsampled['Y_subsampled']
+        Cb = subsampled['Cb_subsampled']
+        Cr = subsampled['Cr_subsampled']
+
+        Y_padded = pad_channel(Y)
+        Cb_padded = pad_channel(Cb)
+        Cr_padded = pad_channel(Cr)
+
         Y_blocks = split_channel(Y_padded)
         Cb_blocks = split_channel(Cb_padded)
         Cr_blocks = split_channel(Cr_padded)
-        
-        block_str = "\n\n".join("   ".join(f"{val:.5f}" for val in row) for row in Y_blocks[0][0])
+
         self.logger.debug(f"""
-    Split into block 8x8: Success
-    Number of blocks: {Y_blocks.shape[0]}x{Y_blocks.shape[1]}
-    Size of Y: {Y_blocks.shape}
-    First Y block:\n
-{block_str}\n""")
-        
+    _split_into_blocks: Success
+    Y_blocks shape: {Y_blocks.shape} (H_blocks × W_blocks × 8 × 8)
+    Cb_blocks shape: {Cb_blocks.shape}
+    Cr_blocks shape: {Cr_blocks.shape}
+    First Y block sample:
+    {np.array2string(Y_blocks[0,0], precision=2, floatmode='fixed')}
+    """)
+
         return {
             'Y_blocks': Y_blocks,
             'Cb_blocks': Cb_blocks,
             'Cr_blocks': Cr_blocks
         }
 
+
     @log_step
     def _level_shift(self, blocks_data):
         """Применяет уровень сдвига к данным"""
+        
         shifted_blocks = {
             'Y_shift_blocks': blocks_data['Y_blocks'] - 128,
             'Cb_shift_blocks': blocks_data['Cb_blocks'] - 128,
@@ -405,97 +391,115 @@ class JpegCompressor:
     
     @log_step
     def _apply_dct(self, blocks_data):
-        """Применяет DCT ко всем блокам всех каналов"""
-
+        """Применяет DCT ко всем блокам всех каналов (учитывает разные размеры для Y, Cb, Cr)"""
+        
         shifted_blocks_data = self._level_shift(blocks_data)
 
         Y_blocks = shifted_blocks_data['Y_shift_blocks']
         Cb_blocks = shifted_blocks_data['Cb_shift_blocks']
         Cr_blocks = shifted_blocks_data['Cr_shift_blocks']
 
-        num_blocks_h, num_blocks_w = Y_blocks.shape[:2]
-        
-        # Создаем массивы для DCT коэффициентов
-        Y_dct = np.zeros_like(Y_blocks)
-        Cb_dct = np.zeros_like(Cb_blocks)
-        Cr_dct = np.zeros_like(Cr_blocks)
-        
-        # Применяем DCT к каждому блоку каждого канала
-        for i in range(num_blocks_h):
-            for j in range(num_blocks_w):
-                Y_dct[i, j] = self._dct(Y_blocks[i, j])
-                Cb_dct[i, j] = self._dct(Cb_blocks[i, j])
-                Cr_dct[i, j] = self._dct(Cr_blocks[i, j])
-                
+        # Функция для применения DCT ко всем блокам одного канала
+        def apply_dct_to_channel(blocks: np.ndarray) -> np.ndarray:
+            h_blocks, w_blocks = blocks.shape[:2]
+            dct_blocks = np.zeros_like(blocks)
+            for i in range(h_blocks):
+                for j in range(w_blocks):
+                    dct_blocks[i, j] = self._dct(blocks[i, j])
+            return dct_blocks
+
+        Y_dct = apply_dct_to_channel(Y_blocks)
+        Cb_dct = apply_dct_to_channel(Cb_blocks)
+        Cr_dct = apply_dct_to_channel(Cr_blocks)
+
         dct_block_str = "\n\n".join("   ".join(f"{val:>8.3f}" for val in row) for row in Y_dct[0][0])
         self.logger.debug(f"""
-    DCT-encode: Success
-    Number of dct blocks: {Y_dct.shape[0]}x{Y_dct.shape[1]}
-    Size of dct-Y: {Y_dct.shape}
-    DC-componet: {Y_dct[0][0][0][0]}
-    First dct-Y block:\n
-{dct_block_str}\n""")
-        
+        DCT-encode: Success
+        Y_dct shape: {Y_dct.shape}
+        Cb_dct shape: {Cb_dct.shape}
+        Cr_dct shape: {Cr_dct.shape}
+        DC component (Y[0,0]): {Y_dct[0][0][0][0]:.3f}
+        First Y DCT block:
+    {dct_block_str}\n""")
+
         return {
             'Y_dct': Y_dct,
-            'Cb_dct': Cb_dct, 
+            'Cb_dct': Cb_dct,
             'Cr_dct': Cr_dct,
         }
    
     @log_step
-    def _apply_quantization(self, dct_blocks):
-        """Применяет квантование ко всем DCT-блокам всех каналов"""
+    def _apply_quantization(self, dct_blocks: dict) -> dict:
+        """Применяет квантование ко всем DCT-блокам всех каналов (учитывает разные размеры при 4:2:0)."""
 
         Y_dct = dct_blocks['Y_dct']
         Cb_dct = dct_blocks['Cb_dct']
         Cr_dct = dct_blocks['Cr_dct']
 
-        num_blocks_h, num_blocks_w = Y_dct.shape[:2]
-        
-        self.logger.debug(f"""
-    STANDARD_LUMINANCE_QUANT_TABLE before scaling:
-{self.STANDARD_LUMINANCE_QUANT_TABLE}\n""")
-        
-        self.logger.debug(f"""
-    STANDARD_LUMINANCE_QUANT_TABLE after scaling (quality = {self.quality}):
-{self._scale_quant_table(self.STANDARD_LUMINANCE_QUANT_TABLE, self.quality)}\n""")
+        # Масштабируем таблицы квантования один раз (а не в каждом цикле)
+        qY = self._scale_quant_table(self.STANDARD_LUMINANCE_QUANT_TABLE, self.quality).astype(np.float32)
+        qC = self._scale_quant_table(self.STANDARD_CHROMINANCE_QUANT_TABLE, self.quality).astype(np.float32)
 
-        # Создаем массивы для квантованных коэффициентов
-        Y_quant = np.zeros_like(Y_dct, dtype=np.int32)
-        Cb_quant = np.zeros_like(Cb_dct, dtype=np.int32)
-        Cr_quant = np.zeros_like(Cr_dct, dtype=np.int32)
-
-        # Применяем квантование к каждому блоку
-        for i in range(num_blocks_h):
-            for j in range(num_blocks_w):
-                Y_quant[i, j] = np.round(Y_dct[i, j] / self._scale_quant_table(self.STANDARD_LUMINANCE_QUANT_TABLE, self.quality).astype(np.float32)).astype(np.int32)
-                Cb_quant[i, j] = np.round(Cb_dct[i, j] / self._scale_quant_table(self.STANDARD_CHROMINANCE_QUANT_TABLE, self.quality).astype(np.float32)).astype(np.int32)
-                Cr_quant[i, j] = np.round(Cr_dct[i, j] / self._scale_quant_table(self.STANDARD_CHROMINANCE_QUANT_TABLE, self.quality).astype(np.float32)).astype(np.int32)
-
-        quant_block_str = "\n\n".join("   ".join(f"{val:>8.3f}" for val in row) for row in Y_quant[0][0])
         self.logger.debug(f"""
-    Quantization: Success
-    Number of quant blocks: {Y_quant.shape[0]}x{Y_quant.shape[1]}
-    Size of quant-Y: {Y_quant.shape}
-    First quant-Y block:\n
-{quant_block_str}\n""")
-        
+        STANDARD_LUMINANCE_QUANT_TABLE (scaled, quality={self.quality}):
+    {qY}
+
+        STANDARD_CHROMINANCE_QUANT_TABLE (scaled):
+    {qC}\n""")
+
+        # Функция для квантования одного канала
+        def quantize_channel(dct_array: np.ndarray, qtable: np.ndarray) -> np.ndarray:
+            h_blocks, w_blocks = dct_array.shape[:2]
+            quantized = np.zeros_like(dct_array, dtype=np.int32)
+            for i in range(h_blocks):
+                for j in range(w_blocks):
+                    quantized[i, j] = np.round(dct_array[i, j] / qtable).astype(np.int32)
+            return quantized
+
+        # Применяем квантование для каждого канала отдельно
+        Y_quant = quantize_channel(Y_dct, qY)
+        Cb_quant = quantize_channel(Cb_dct, qC)
+        Cr_quant = quantize_channel(Cr_dct, qC)
+
+        quant_block_str = "\n\n".join(
+            "   ".join(f"{val:>8d}" for val in row) for row in Y_quant[0][0]
+        )
+        self.logger.debug(f"""
+        Quantization: Success
+        Y_quant shape: {Y_quant.shape}
+        Cb_quant shape: {Cb_quant.shape}
+        Cr_quant shape: {Cr_quant.shape}
+        First quantized Y block:
+    {quant_block_str}\n""")
+
         return {
             'Y_quant': Y_quant,
             'Cb_quant': Cb_quant,
             'Cr_quant': Cr_quant
         }
 
-    def _value_to_bits(self, value: int) -> str:
-        """Преобразует значение коэффициента в 'сырые' биты (по JPEG)."""
-        if value == 0:
-            return ""
-        size = int(math.floor(math.log2(abs(value)))) + 1
-        if value > 0:
-            return format(value, f"0{size}b")
-        else:
-            max_val = (1 << size) - 1
-            return format(value + max_val, f"0{size}b")
+
+    # def _value_to_bits(self, value: int) -> str:
+    #     """Преобразует значение коэффициента в 'сырые' биты (по JPEG)."""
+    #     if value == 0:
+    #         return ""
+    #     size = int(math.floor(math.log2(abs(value)))) + 1
+    #     if value > 0:
+    #         return format(value, f"0{size}b")
+    #     else:
+    #         max_val = (1 << size) - 1
+    #         return format(value + max_val, f"0{size}b")
+
+    def _value_to_bits(self, value: int) -> tuple[int, str]:
+            """Возвращает (size, bits) по стандарту JPEG для DC-компонент."""
+            if value == 0:
+                return 0, ""
+            size = int(math.floor(math.log2(abs(value)))) + 1
+            if value > 0:
+                bits = format(value, f"0{size}b")
+            else:
+                bits = format((1 << size) - 1 + value, f"0{size}b")  # инверсия
+            return size, bits
 
     @log_step
     def _dc_differentiation(self, quantized):
@@ -526,42 +530,36 @@ class JpegCompressor:
                 дифференциала (с учетом инверсии для отрицательных чисел)
         """
 
-        def diff_dc(blocks):
-            dc = blocks[:, :, 0, 0].flatten()
-            return np.diff(np.insert(dc, 0, 0))
+        def dc_diff(blocks: np.ndarray) -> np.ndarray:
+            """Извлекает DC-компоненты и вычисляет дифференциалы."""
+            dc_values = blocks[:, :, 0, 0].flatten()
+            dc_diffs = np.diff(np.insert(dc_values, 0, 0))  # первый относительно 0
+            return dc_diffs
 
-        def encode_dc_stream(dc_diff_array, freq_key):
+        def encode_dc_channel(blocks: np.ndarray, freq_key: str) -> list[dict]:
+            """Кодирует все DC-компоненты канала в список словарей."""
+            diffs = dc_diff(blocks)
             encoded = []
-
-            for diff in dc_diff_array:
-                if diff == 0:
-                    size = 0
-                    value_bits = ""
-                else:
-                    size = int(math.floor(math.log2(abs(diff))) + 1)
-                    value_bits = self._value_to_bits(diff)
-
-                # собираем частоты в словарь
+            for diff in diffs:
+                size, bits = self._value_to_bits(diff)
+                # собираем статистику (частоты категорий)
+                self.dc_freq.setdefault(freq_key, {})
                 self.dc_freq[freq_key][size] = self.dc_freq[freq_key].get(size, 0) + 1
-
-                encoded.append({"size": size, "value_bits": value_bits})
+                encoded.append({"size": size, "value_bits": bits})
             return encoded
 
-        Y_diff = diff_dc(quantized['Y_quant'])
-        Cb_diff = diff_dc(quantized['Cb_quant'])
-        Cr_diff = diff_dc(quantized['Cr_quant'])
-        
-        Y_dc_encoded = encode_dc_stream(Y_diff, 'Y')
-        Cb_dc_encoded = encode_dc_stream(Cb_diff, 'C')
-        Cr_dc_encoded = encode_dc_stream(Cr_diff, 'C')
+        # Обработка каждого канала независимо
+        Y_dc_encoded = encode_dc_channel(quantized['Y_quant'], 'Y')
+        Cb_dc_encoded = encode_dc_channel(quantized['Cb_quant'], 'C')
+        Cr_dc_encoded = encode_dc_channel(quantized['Cr_quant'], 'C')
 
         self.logger.debug(f"""
-    DC-differentiation: Success
-    Size of diff-Y: {Y_diff.shape[0]}
-    First eight diff-Y components:
-        {Y_diff[:8]}
-    First eight diff-encoded-Y components:
-        {Y_dc_encoded[:8]}
+        DC-differentiation: Success
+        Y_dc count: {len(Y_dc_encoded)}
+        Cb_dc count: {len(Cb_dc_encoded)}
+        Cr_dc count: {len(Cr_dc_encoded)}
+        First 8 Y-diffs: {[item for item in np.array([b['size'] for b in Y_dc_encoded[:8]])]}
+        First 8 Y value bits: {[b['value_bits'] for b in Y_dc_encoded[:8]]}
         """)
 
         return {
@@ -569,6 +567,7 @@ class JpegCompressor:
             'Cb_dc_encoded': Cb_dc_encoded,
             'Cr_dc_encoded': Cr_dc_encoded,
         }
+
 
     def _zigzag_scanning(self, block):
         """Зигзаг-сканирование одного блока NxN"""
@@ -623,37 +622,31 @@ class JpegCompressor:
         rle = []
         values = []
         zero_run = 0
-
+        self.ac_freq.setdefault(freq_key, {})
         for coeff in ac_coeffs:
             if coeff == 0:
                 zero_run += 1
                 if zero_run == 16:
-                    # ZRL (Zero Run Length)
                     symbol = (15, 0)
                     rle.append(symbol)
                     values.append("")
-
-                    # Считаем частоту
                     self.ac_freq[freq_key][symbol] = self.ac_freq[freq_key].get(symbol, 0) + 1
-
                     zero_run = 0
             else:
                 size = int(math.floor(math.log2(abs(coeff)))) + 1
                 symbol = (zero_run, size)
+                # распакуем (size, bits) — чтобы values содержал строку бит
+                size_expected, bits = self._value_to_bits(coeff) if isinstance(self._value_to_bits(coeff), tuple) else (size, self._value_to_bits(coeff))
                 rle.append(symbol)
-                values.append(self._value_to_bits(coeff))
-
-                # Считаем частоту
+                values.append(bits)
                 self.ac_freq[freq_key][symbol] = self.ac_freq[freq_key].get(symbol, 0) + 1
-
                 zero_run = 0
 
         # Если остались нули в конце блока → EOB
-        if zero_run > 0 or len(rle) == 0 or rle[-1] == (15, 0):
-            symbol = (0, 0)  # EOB
-            rle.append(symbol)
+        if zero_run > 0:
+            rle.append((0, 0))
             values.append("")
-            self.ac_freq[freq_key][symbol] = self.ac_freq[freq_key].get(symbol, 0) + 1
+            self.ac_freq[freq_key][(0, 0)] = self.ac_freq[freq_key].get((0, 0), 0) + 1
 
         return {"rle": rle, "values": values}
 
@@ -677,9 +670,9 @@ class JpegCompressor:
 
         Returns:
             dict: {
-                'Y_ac_rle': list,  # [{'rle': list, 'values': list}, ...]
-                'Cb_ac_rle': list, # [{'rle': list, 'values': list}, ...]
-                'Cr_ac_rle': list  # [{'rle': list, 'values': list}, ...]
+                'Y_ac_rle': list,  # [{'rle': int, 'value_bits': str}, ...]
+                'Cb_ac_rle': list, # [{'rle': int, 'value_bits': str}, ...]
+                'Cr_ac_rle': list  # [{'rle': int, 'value_bits': str}, ...]
             }
 
             - **rle (list)**: Список пар (RUN, SIZE). RUN — количество нулей, 
@@ -687,41 +680,49 @@ class JpegCompressor:
             - **values (list)**: Список строковых представлений битов
               ненулевых AC-коэффициентов (амплитуд).
         """
-    
+        
         def process_channel(channel_blocks, freq_key):
             h, w = channel_blocks.shape[:2]
-            rle_blocks = []
+            flat_rle_list = []
+
             for i in range(h):
                 for j in range(w):
                     block = channel_blocks[i, j]
                     zigzag = self._zigzag_scanning(block)
-                    ac = zigzag[1:]  # исключаем DC
-                    rle = self._run_length_encoding(ac, freq_key)
-                    rle_blocks.append(rle)
-            return rle_blocks
-        
+                    ac_coeffs = zigzag[1:]  # исключаем DC
+
+                    # RLE для одного блока
+                    rle_result = self._run_length_encoding(ac_coeffs, freq_key)
+                    rle_pairs = rle_result["rle"]
+                    values = rle_result["values"]
+
+                    # Преобразуем в список словарей
+                    for (run, size), val in zip(rle_pairs, values):
+                        flat_rle_list.append({
+                            "rle": (run, size),
+                            "value_bits": val
+                        })
+
+            return flat_rle_list
+
+        # Обрабатываем три канала
         Y_ac_rle = process_channel(quantized['Y_quant'], 'Y')
         Cb_ac_rle = process_channel(quantized['Cb_quant'], 'C')
         Cr_ac_rle = process_channel(quantized['Cr_quant'], 'C')
-        
-        
+
+        # Пример для логов
+        sample = Y_ac_rle[:10]
         self.logger.debug(f"""
-    RLE-encoding: Success
-    Size of first Y-RLE-array: {len(Y_ac_rle[0]["rle"])}
-    RLE-array:
-        {Y_ac_rle[0]["rle"]}
-    values:
-        {Y_ac_rle[0]["values"]}
-    One dict:
-        {Y_ac_rle[0]}
-    """)
-        
+        RLE-encoding (flat): Success
+        Total Y-AC symbols: {len(Y_ac_rle)}
+        First 10 Y-AC entries:
+            {sample}
+        """)
+
         self.logger.debug(f"""
-    DC-Y-components frequency = {dict(sorted(self.dc_freq['Y'].items(), key=lambda x: x[1], reverse=True))}
-    DC-C-components frequency = {dict(sorted(self.dc_freq['C'].items(), key=lambda x: x[1], reverse=True))}
-    AC-Y-components frequency = {dict(sorted(self.ac_freq['Y'].items(), key=lambda x: x[1], reverse=True))}
-    AC-С-components frequency = {dict(sorted(self.ac_freq['C'].items(), key=lambda x: x[1], reverse=True))}
-    """)
+        AC-Y frequency (top 10): {dict(sorted(self.ac_freq['Y'].items(), key=lambda x: x[1], reverse=True)[:10])}
+        AC-Cb frequency (top 10): {dict(sorted(self.ac_freq['C'].items(), key=lambda x: x[1], reverse=True)[:10])}
+        """)
 
         return {
             'Y_ac_rle': Y_ac_rle,
@@ -735,34 +736,52 @@ class JpegCompressor:
 
         def encode_channel(dc_list, ac_list, dc_table, ac_table):
             bitstream = ""
-            for i in range(len(dc_list)):
+            ac_index = 0  # указатель в общем списке AC
+
+            for dc in dc_list:
                 # --- DC ---
-                size = dc_list[i]["size"]
-                value_bits = dc_list[i]["value_bits"]
-                huff_dc = dc_table[size]
+                size = dc["size"]
+                value_bits = dc["value_bits"]
+                huff_dc = dc_table.get(size, "")
                 bitstream += huff_dc + value_bits
 
                 # --- AC ---
-                rle_pairs = ac_list[i]["rle"]
-                value_bits_list = ac_list[i]["values"]
-                for (run, size), value_bits in zip(rle_pairs, value_bits_list):
+                # читаем AC-коэффициенты для одного блока
+                while ac_index < len(ac_list):
+                    run, size = ac_list[ac_index]["rle"]
+                    value_bits = ac_list[ac_index]["value_bits"]
+                    ac_index += 1
                     huff_ac = ac_table.get((run, size), "")
                     bitstream += huff_ac + value_bits
+
+                    # EOB → значит, блок окончен
+                    if (run, size) == (0, 0):
+                        break
+
             return bitstream
 
         # Кодируем каждый канал
-        Y_bits = encode_channel(dc_components["Y_dc_encoded"], ac_components["Y_ac_rle"], huffman_tables["DC_Y"], huffman_tables["AC_Y"])
-        Cb_bits = encode_channel(dc_components["Cb_dc_encoded"], ac_components["Cb_ac_rle"], huffman_tables["DC_C"], huffman_tables["AC_C"])
-        Cr_bits = encode_channel(dc_components["Cr_dc_encoded"], ac_components["Cr_ac_rle"], huffman_tables["DC_C"], huffman_tables["AC_C"])
+        Y_bits = encode_channel(
+            dc_components["Y_dc_encoded"], ac_components["Y_ac_rle"],
+            huffman_tables["DC_Y"], huffman_tables["AC_Y"]
+        )
+        Cb_bits = encode_channel(
+            dc_components["Cb_dc_encoded"], ac_components["Cb_ac_rle"],
+            huffman_tables["DC_C"], huffman_tables["AC_C"]
+        )
+        Cr_bits = encode_channel(
+            dc_components["Cr_dc_encoded"], ac_components["Cr_ac_rle"],
+            huffman_tables["DC_C"], huffman_tables["AC_C"]
+        )
 
         self.logger.debug(f"""
-    Huffman encoding: Success
-    Y bits length: {len(Y_bits)}
-    Cb bits length: {len(Cb_bits)}
-    Cr bits length: {len(Cr_bits)}
-    First 512 bits of Y:
-        {Y_bits[:512]}
-    """)
+        Huffman encoding: Success
+        Y bits length: {len(Y_bits)}
+        Cb bits length: {len(Cb_bits)}
+        Cr bits length: {len(Cr_bits)}
+        First 512 bits of Y:
+            {Y_bits[:512]}
+        """)
 
         return {
             "Y_bits": Y_bits,
@@ -770,6 +789,7 @@ class JpegCompressor:
             "Cr_bits": Cr_bits,
             "bitstream": Y_bits + Cb_bits + Cr_bits
         }
+
     
     @log_step
     def _create_app0_segment(self): return bytes([0]*3)
