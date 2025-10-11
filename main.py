@@ -1,4 +1,6 @@
 from jpeg_compressor import JpegCompressor
+from PIL import Image, ImageFile
+import numpy as np
     
 def test_scale():
     compressor2 = JpegCompressor()
@@ -14,13 +16,18 @@ def test_scale():
     
 def test():
     compressor = JpegCompressor()
-    compressor.compress("data/test_image_2.jpg", "output_test_image_2")
+    compressor.compress("data/test_image_3.jpg", "output_test_image_3")
 
 def test_rle():
     compressor = JpegCompressor()
     ac=[0, 8, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     res=compressor._run_length_encoding(ac)
     print(res["rle"])
+    
+def output_test():
+    ImageFile.LOAD_TRUNCATED_IMAGES = True
+    img = Image.open("data/output_test_image_3.jpg")
+    img.load()
 
 if __name__ == "__main__":
     test()
