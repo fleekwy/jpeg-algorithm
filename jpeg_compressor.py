@@ -29,8 +29,6 @@ class JpegCompressor:
         
         self.logger.info("__init__: <start>")
         
-        self._original_pixels = None
-        self._compressed_pixels = None
         self.origin_height = None
         self.origin_width = None
         self.quality = None
@@ -164,8 +162,6 @@ class JpegCompressor:
 
     @log_step
     def _reset_state(self):
-        self._original_pixels = None
-        self._compressed_pixels = None
         self.origin_height = None
         self.origin_width = None
         self.quality = None
@@ -771,9 +767,11 @@ class JpegCompressor:
                 image = image.convert('RGB')
                 
             # Преобразуем изображение в числовую матрицу для дальнейших преобразований
-            self._original_pixels = np.array(image, dtype=np.float32)
+            pixels = np.array(image, dtype=np.float32)
             self.quality = quality
-            self.origin_height, self.origin_width = self._original_pixels.shape[:2]
+            self.origin_height, self.origin_width = pixels.shape[:2]
+            
+            return pixels
             
         except Exception as e:
             self._reset_state()
@@ -785,9 +783,8 @@ class JpegCompressor:
     def compress(self, image_path: str, compressed_image_name: str, quality: int = 75):
         """Основной метод сжатия"""
         start_time = time.time()
-        self._load_image(image_path, quality)
 
-        rgb_pixels = self._original_pixels
+        rgb_pixels = self._load_image(image_path, quality)
         ycbcr_pixels = self._rgb_to_ycbcr(rgb_pixels)
         subsampled = self._chroma_subsampling(ycbcr_pixels)
         dict_blocks = self._split_into_blocks(subsampled)
