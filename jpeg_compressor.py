@@ -224,24 +224,17 @@ class JpegCompressor:
         {rgb_pixels[0][0]} {rgb_pixels[0][1]}
         {rgb_pixels[1][0]} {rgb_pixels[1][1]}\n""")
         
-        # Разделяем каналы RGB
         R = rgb_pixels[:, :, 0].copy()
         G = rgb_pixels[:, :, 1].copy()
         B = rgb_pixels[:, :, 2].copy()
         
-        # Преобразование в YCbCr согласно стандарту JPEG
         Y = 0.299 * R + 0.587 * G + 0.114 * B
         Cb = 128 - 0.168736 * R - 0.331264 * G + 0.5 * B
         Cr = 128 + 0.5 * R - 0.418688 * G - 0.081312 * B
         
-        # Ограничение по стандарту JPEG
-        Y = np.clip(Y, 16, 235)
-        Cb = np.clip(Cb, 16, 240)
-        Cr = np.clip(Cr, 16, 240)
-        
         self.logger.debug(f"""
     Transform RGB → YCbCr: Success
-    Size of Y: {Y.shape}
+    Size of ycbcr-Y: {Y.shape}
     2x2 Y-block:
         {Y[0][0]} {Y[0][1]}
         {Y[1][0]} {Y[1][1]}\n""")
@@ -476,15 +469,19 @@ class JpegCompressor:
         }
 
     def _value_to_bits(self, value: int) -> tuple[int, str]:
-            """Возвращает (size, bits) по стандарту JPEG для DC-компонент."""
-            if value == 0:
+            """Возвращает (size, bits) по стандарту JPEG."""
+            # Convert numpy int to python int to use .bit_length()
+            py_value = int(value)
+
+            if py_value == 0:
                 return 0, ""
-            size = int(math.floor(math.log2(abs(value)))) + 1
-            if value > 0:
-                bits = format(value, f"0{size}b")
+            
+            size = py_value.bit_length()
+            if py_value > 0:
+                return size, format(py_value, f'0{size}b')
             else:
-                bits = format((1 << size) - 1 + value, f"0{size}b")  # инверсия
-            return size, bits
+                # Для отрицательных чисел: two's complement, но инвертированный
+                return size, format((1 << size) + py_value - 1, f'0{size}b')
 
     def _zigzag_scanning(self, block):
         """Зигзаг-сканирование одного блока NxN"""
