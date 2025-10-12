@@ -19,7 +19,6 @@ class JpegCompressor:
         quality (int): Качество сжатия от 1 до 100
     """
     
-    
 # private 
     
     def __init__(self):
@@ -105,6 +104,8 @@ class JpegCompressor:
         
         self.logger.info("__init__: <end>")
         
+# protected
+        
     def _setup_logger(self, disable_file=False):
         
             # Загружаем конфигурацию YAML
@@ -146,7 +147,6 @@ class JpegCompressor:
             # Применяем конфигурацию
             logging.config.dictConfig(config)
             return logging.getLogger("JPEGCompressor")
-
     
     def log_step(func):
         def wrapper(self, *args, **kwargs):
@@ -160,8 +160,6 @@ class JpegCompressor:
                 self.logger.error(f"{name}: FAILED — {e}")
                 raise
         return wrapper
-        
-# protected
 
     @log_step
     def _reset_state(self):
@@ -288,7 +286,9 @@ class JpegCompressor:
         
         self.logger.debug(f"""
     YCbCr-array subsample: Success
-    Size of subsampled_pixels: {Y_subsampled.shape}
+    Y_subsampled shape: {Y_subsampled.shape}
+    Cb_subsampled shape: {Cb_subsampled.shape}
+    Cr_subsampled shape: {Cr_subsampled.shape}
     2x2 Y-block:
         {Y_subsampled[0][0]} {Y_subsampled[0][1]}
         {Y_subsampled[1][0]} {Y_subsampled[1][1]}\n""")
@@ -352,7 +352,6 @@ class JpegCompressor:
             'Cb': Cb_blocks,
             'Cr': Cr_blocks
         }
-
 
     @log_step
     def _level_shift(self, blocks_data):
@@ -485,18 +484,6 @@ class JpegCompressor:
 
     def _zigzag_scanning(self, block):
         """Зигзаг-сканирование одного блока NxN"""
-        
-        # Для блока 8x8:
-        #     zigzag_order = [
-        #     (0,0),(0,1),(1,0),(2,0),(1,1),(0,2),(0,3),(1,2),
-        #     (2,1),(3,0),(4,0),(3,1),(2,2),(1,3),(0,4),(0,5),
-        #     (1,4),(2,3),(3,2),(4,1),(5,0),(6,0),(5,1),(4,2),
-        #     (3,3),(2,4),(1,5),(0,6),(0,7),(1,6),(2,5),(3,4),
-        #     (4,3),(5,2),(6,1),(7,0),(7,1),(6,2),(5,3),(4,4),
-        #     (3,5),(2,6),(1,7),(2,7),(3,6),(4,5),(5,4),(6,3),
-        #     (7,2),(7,3),(6,4),(5,5),(4,6),(3,7),(4,7),(5,6),
-        #     (6,5),(7,4),(7,5),(6,6),(5,7),(6,7),(7,6),(7,7)
-        # ]
             
         N = block.shape[0]
         result = []
@@ -625,8 +612,8 @@ class JpegCompressor:
         
         # Конвертация в байты
         return bitstream.encode('latin-1')
-
     
+    @log_step
     def _create_app0_segment(self) -> bytes:
         """APP0 (JFIF) segment."""
         identifier = b"JFIF\x00"
@@ -638,6 +625,7 @@ class JpegCompressor:
         length = 2 + len(payload)
         return b'\xFF\xE0' + struct.pack(">H", length) + payload
 
+    @log_step
     def _create_dqt_segments(self) -> bytes:
         """Собирает DQT сегменты для Y и C."""
         segments = bytearray()
@@ -654,6 +642,7 @@ class JpegCompressor:
 
         return bytes(segments)
 
+    @log_step
     def _create_sof0_segment(self) -> bytes:
         """SOF0 (Baseline DCT)"""
         payload = struct.pack(">BHHB", 8, self.origin_height, self.origin_width, 3)
@@ -667,6 +656,7 @@ class JpegCompressor:
         length = 2 + len(payload)
         return b'\xFF\xC0' + struct.pack(">H", length) + payload
 
+    @log_step
     def _build_dht_segment(self, bits, huffval, tc, th) -> bytes:
         """Строит один DHT сегмент из стандартных таблиц."""
         payload = bytearray()
@@ -677,6 +667,7 @@ class JpegCompressor:
         length = 2 + len(payload)
         return b'\xFF\xC4' + struct.pack(">H", length) + bytes(payload)
 
+    @log_step
     def _create_dht_segments(self) -> bytes:
         """Формирует все 4 DHT сегмента."""
         segments = bytearray()
@@ -686,6 +677,7 @@ class JpegCompressor:
         segments += self._build_dht_segment(self.C_AC_HUFFMAN_BITS, self.C_AC_HUFFMAN_VALS, 1, 1) # AC_C
         return bytes(segments)
 
+    @log_step
     def _create_sos_segment(self) -> bytes:
         """Start of Scan."""
         payload = bytearray()
@@ -761,7 +753,6 @@ class JpegCompressor:
         except Exception as e:
             self._reset_state()
             raise ValueError(f"Image loading Error: {e}")
-    
     
 # public
 
