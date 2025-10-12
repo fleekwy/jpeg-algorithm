@@ -3,7 +3,7 @@ from PIL import Image
 import os
 import logging.config
 import yaml
-from datetime import datetime
+import time
 import struct
 from dotenv import load_dotenv
 
@@ -783,7 +783,7 @@ class JpegCompressor:
     @log_step
     def compress(self, image_path: str, compressed_image_name: str, quality: int = 75):
         """Основной метод сжатия"""
-
+        start_time = time.time()
         self._load_image(image_path, quality)
 
         rgb_pixels = self._original_pixels
@@ -800,3 +800,6 @@ class JpegCompressor:
         output_path = os.path.join(output_dir, compressed_image_name)
 
         self._create_jpeg(image_data, output_path)
+        end_time = time.time()
+        execution_time = end_time - start_time
+        self.logger.info(f"Runtime compress with {quality=}: {execution_time:.2f} s")
