@@ -1,10 +1,10 @@
-import math
 import numpy as np
 from PIL import Image
 import os
 import logging.config
 import yaml
 from datetime import datetime
+import struct
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -294,9 +294,9 @@ class JpegCompressor:
         {Y_subsampled[1][0]} {Y_subsampled[1][1]}\n""")
         
         return {
-        'Y_subsampled' : Y_subsampled,
-        'Cb_subsampled' : Cb_subsampled,
-        'Cr_subsampled' : Cr_subsampled,
+        'Y' : Y_subsampled,
+        'Cb' : Cb_subsampled,
+        'Cr' : Cr_subsampled,
     }
         
     @log_step
@@ -326,9 +326,9 @@ class JpegCompressor:
             return channel.reshape(h // 8, 8, w // 8, 8).transpose(0, 2, 1, 3)
 
         # Обработка каждого канала отдельно
-        Y = subsampled['Y_subsampled']
-        Cb = subsampled['Cb_subsampled']
-        Cr = subsampled['Cr_subsampled']
+        Y = subsampled['Y']
+        Cb = subsampled['Cb']
+        Cr = subsampled['Cr']
 
         Y_padded = pad_channel(Y)
         Cb_padded = pad_channel(Cb)
@@ -348,9 +348,9 @@ class JpegCompressor:
     """)
 
         return {
-            'Y_blocks': Y_blocks,
-            'Cb_blocks': Cb_blocks,
-            'Cr_blocks': Cr_blocks
+            'Y': Y_blocks,
+            'Cb': Cb_blocks,
+            'Cr': Cr_blocks
         }
 
 
@@ -359,17 +359,17 @@ class JpegCompressor:
         """Применяет уровень сдвига к данным"""
         
         shifted_blocks = {
-            'Y_shift_blocks': blocks_data['Y_blocks'] - 128,
-            'Cb_shift_blocks': blocks_data['Cb_blocks'] - 128,
-            'Cr_shift_blocks': blocks_data['Cr_blocks'] - 128
+            'Y': blocks_data['Y'] - 128,
+            'Cb': blocks_data['Cb'] - 128,
+            'Cr': blocks_data['Cr'] - 128
         }
         
-        shifted_block_str = "\n\n".join(" ".join(f"{val:>8.3f}" for val in row) for row in shifted_blocks["Y_shift_blocks"][0][0])
+        shifted_block_str = "\n\n".join(" ".join(f"{val:>8.3f}" for val in row) for row in shifted_blocks["Y"][0][0])
         self.logger.debug(f"""
     Level Shift: Success
-    Number of shifted blocks: {shifted_blocks['Y_shift_blocks'].shape[0]}x{shifted_blocks['Y_shift_blocks'].shape[1]}
-    Size of shifted-Y: {shifted_blocks['Y_shift_blocks'].shape}
-    DC-component: {shifted_blocks['Y_shift_blocks'][0][0][0][0]}
+    Number of shifted blocks: {shifted_blocks['Y'].shape[0]}x{shifted_blocks['Y'].shape[1]}
+    Size of shifted-Y: {shifted_blocks['Y'].shape}
+    DC-component: {shifted_blocks['Y'][0][0][0][0]}
     First shifted-Y block:\n
 {shifted_block_str}\n""")
         
@@ -385,9 +385,9 @@ class JpegCompressor:
         
         shifted_blocks_data = self._level_shift(blocks_data)
 
-        Y_blocks = shifted_blocks_data['Y_shift_blocks']
-        Cb_blocks = shifted_blocks_data['Cb_shift_blocks']
-        Cr_blocks = shifted_blocks_data['Cr_shift_blocks']
+        Y_blocks = shifted_blocks_data['Y']
+        Cb_blocks = shifted_blocks_data['Cb']
+        Cr_blocks = shifted_blocks_data['Cr']
 
         # Функция для применения DCT ко всем блокам одного канала
         def apply_dct_to_channel(blocks: np.ndarray) -> np.ndarray:
@@ -413,18 +413,18 @@ class JpegCompressor:
     {dct_block_str}\n""")
 
         return {
-            'Y_dct': Y_dct,
-            'Cb_dct': Cb_dct,
-            'Cr_dct': Cr_dct,
+            'Y': Y_dct,
+            'Cb': Cb_dct,
+            'Cr': Cr_dct,
         }
    
     @log_step
     def _apply_quantization(self, dct_blocks: dict) -> dict:
         """Применяет квантование ко всем DCT-блокам всех каналов (учитывает разные размеры при 4:2:0)."""
 
-        Y_dct = dct_blocks['Y_dct']
-        Cb_dct = dct_blocks['Cb_dct']
-        Cr_dct = dct_blocks['Cr_dct']
+        Y_dct = dct_blocks['Y']
+        Cb_dct = dct_blocks['Cb']
+        Cr_dct = dct_blocks['Cr']
 
         # Масштабируем таблицы квантования один раз (а не в каждом цикле)
         qY = self._scale_quant_table(self.STANDARD_LUMINANCE_QUANT_TABLE, self.quality).astype(np.float32)
@@ -463,9 +463,9 @@ class JpegCompressor:
     {quant_block_str}\n""")
 
         return {
-            'Y_quant': Y_quant,
-            'Cb_quant': Cb_quant,
-            'Cr_quant': Cr_quant
+            'Y': Y_quant,
+            'Cb': Cb_quant,
+            'Cr': Cr_quant
         }
 
     def _value_to_bits(self, value: int) -> tuple[int, str]:
@@ -627,54 +627,116 @@ class JpegCompressor:
         return bitstream.encode('latin-1')
 
     
-    @log_step
-    def _create_app0_segment(self): return bytes([0]*3)
-    @log_step
-    def _create_dqt_segments(self): return [bytes([0]*3)]
-    @log_step
-    def _create_sof0_segment(self): return bytes([0]*3)
-    @log_step
-    def _create_dht_segments(self): return [bytes([0]*3)]
-    @log_step
-    def _create_sos_segment(self): return bytes([0]*3)
+    def _create_app0_segment(self) -> bytes:
+        """APP0 (JFIF) segment."""
+        identifier = b"JFIF\x00"
+        version = struct.pack(">BB", 1, 1)
+        units = 0
+        x_density, y_density = 1, 1
+        x_thumb, y_thumb = 0, 0
+        payload = identifier + version + bytes([units]) + struct.pack(">HHBB", x_density, y_density, x_thumb, y_thumb)
+        length = 2 + len(payload)
+        return b'\xFF\xE0' + struct.pack(">H", length) + payload
+
+    def _create_dqt_segments(self) -> bytes:
+        """Собирает DQT сегменты для Y и C."""
+        segments = bytearray()
+        
+        lum_bytes = self._scale_quant_table(self.STANDARD_LUMINANCE_QUANT_TABLE, self.quality)
+        payload = bytes([0x00]) + lum_bytes.flatten().tobytes()
+        length = 2 + len(payload)
+        segments += b'\xFF\xDB' + struct.pack(">H", length) + payload
+
+        chrom_bytes = self._scale_quant_table(self.STANDARD_CHROMINANCE_QUANT_TABLE, self.quality)
+        payload = bytes([0x01]) + chrom_bytes.flatten().tobytes()
+        length = 2 + len(payload)
+        segments += b'\xFF\xDB' + struct.pack(">H", length) + payload
+
+        return bytes(segments)
+
+    def _create_sof0_segment(self) -> bytes:
+        """SOF0 (Baseline DCT)"""
+        payload = struct.pack(">BHHB", 8, self.origin_height, self.origin_width, 3)
+        # Y: id=1, sampling=(2,2), qt=0
+        payload += bytes([1, 0x22, 0])
+        # Cb: id=2, sampling=(1,1), qt=1
+        payload += bytes([2, 0x11, 1])
+        # Cr: id=3, sampling=(1,1), qt=1
+        payload += bytes([3, 0x11, 1])
+        
+        length = 2 + len(payload)
+        return b'\xFF\xC0' + struct.pack(">H", length) + payload
+
+    def _build_dht_segment(self, bits, huffval, tc, th) -> bytes:
+        """Строит один DHT сегмент из стандартных таблиц."""
+        payload = bytearray()
+        payload.append((tc << 4) | th) # Tc/Th
+        payload.extend(bits)
+        payload.extend(huffval)
+        
+        length = 2 + len(payload)
+        return b'\xFF\xC4' + struct.pack(">H", length) + bytes(payload)
+
+    def _create_dht_segments(self) -> bytes:
+        """Формирует все 4 DHT сегмента."""
+        segments = bytearray()
+        segments += self._build_dht_segment(self.Y_DC_HUFFMAN_BITS, self.Y_DC_HUFFMAN_VALS, 0, 0) # DC_Y
+        segments += self._build_dht_segment(self.Y_AC_HUFFMAN_BITS, self.Y_AC_HUFFMAN_VALS, 1, 0) # AC_Y
+        segments += self._build_dht_segment(self.C_DC_HUFFMAN_BITS, self.C_DC_HUFFMAN_VALS, 0, 1) # DC_C
+        segments += self._build_dht_segment(self.C_AC_HUFFMAN_BITS, self.C_AC_HUFFMAN_VALS, 1, 1) # AC_C
+        return bytes(segments)
+
+    def _create_sos_segment(self) -> bytes:
+        """Start of Scan."""
+        payload = bytearray()
+        payload.append(3) # 3 компонента в скане
+        # Y -> использует таблицы DC 0, AC 0
+        payload.extend(bytes([1, (0 << 4) | 0]))
+        # Cb -> DC 1, AC 1
+        payload.extend(bytes([2, (1 << 4) | 1]))
+        # Cr -> DC 1, AC 1
+        payload.extend(bytes([3, (1 << 4) | 1]))
+        # Ss, Se, Ah, Al
+        payload.extend(bytes([0, 63, 0]))
+
+        length = 2 + len(payload)
+        return b'\xFF\xDA' + struct.pack(">H", length) + bytes(payload)
     
     @log_step
-    def _create_jpeg(self, encoded_data: bytes, output_path: str):
+    def _create_jpeg(self, image_data: bytes, output_path: str):
         """Создание итогового JPEG файла из закодированных данных"""
-        print(output_path)
-        with open(output_path, 'wb') as f:
-            # 1. SOI — Start of Image
-            f.write(b'\xFF\xD8')
-
-            # 2. APP0 — JFIF header
-            f.write(self._create_app0_segment())
-
-            # 3. DQT — Quantization Tables
-            for qt_segment in self._create_dqt_segments():
-                f.write(qt_segment)
-
-            # 4. SOF0 — Start of Frame
-            f.write(self._create_sof0_segment())
-
-            # 5. DHT — Huffman Tables
-            for dht_segment in self._create_dht_segments():
-                f.write(dht_segment)
-
-            # 6. SOS — Start of Scan
-            f.write(self._create_sos_segment())
-            
-            def bits_to_bytes(bitstring):
-                # Дополняем до кратности 8
-                padding = (8 - len(bitstring) % 8) % 8
-                bitstring += '0' * padding
-                return bytes(int(bitstring[i:i+8], 2) for i in range(0, len(bitstring), 8))
-
-            # 7. Image Data — Закодированные данные
-            f.write(bits_to_bytes(encoded_data))
-
-            # 8. EOI — End of Image
-            f.write(b'\xFF\xD9')
-
+        
+        soi = b'\xFF\xD8'
+        app0 = self._create_app0_segment()
+        dqt = self._create_dqt_segments()
+        sof0 = self._create_sof0_segment()
+        dht = self._create_dht_segments()
+        sos = self._create_sos_segment()
+        eoi = b'\xFF\xD9'
+        
+        self.logger.debug(f"""
+        JPEG segments sizes:
+        APP0: {len(app0)}, DQT: {len(dqt)}, SOF0: {len(sof0)},
+        DHT: {len(dht)}, SOS: {len(sos)}, Image data: {len(image_data)} bytes
+        Total: {len(soi) + len(app0) + len(dqt) + len(sof0) + len(dht) + len(sos) + len(image_data) + len(eoi)} bytes
+        """)
+        
+        try:
+            if not output_path.lower().endswith((".jpg", ".jpeg")):
+                output_path += ".jpg"
+            with open(output_path, "wb") as f:
+                f.write(soi)
+                f.write(app0)
+                f.write(dqt)
+                f.write(sof0)
+                f.write(dht)
+                f.write(sos)
+                f.write(image_data)
+                f.write(eoi)
+            self.logger.info(f"JPEG file created successfully: {output_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to create JPEG file: {e}")
+            raise
     
     @log_step
     def _load_image(self, image_path, quality):
