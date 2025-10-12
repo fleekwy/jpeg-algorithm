@@ -11,13 +11,39 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class JpegCompressor:
-    """Класс JPEG-компрессора.
+    """JPEG-компрессор для сжатия изображений с использованием стандартного алгоритма JPEG.
+    
+    Реализует полный конвейер сжатия JPEG:
+    - Преобразование цветового пространства RGB → YCbCr
+    - Хроматическое прореживание 4:2:0
+    - Дискретное косинусное преобразование (DCT)
+    - Квантование с настраиваемым качеством
+    - Кодирование Хаффмана
+    - Формирование валидного JPEG-файла с сегментами
+    
+    Класс использует стандартные JPEG-таблицы (квантования, Хаффмана) 
+    и поддерживает настройку качества сжатия от 1 до 100.
     
     Attributes:
-        _original_pixels (np.ndarray): Исходное изображение в виде матрицы пикселей
-        _pixels (np.ndarray): Текущее состояние изображения в процессе обработки
-        original_image_path (str): Путь к исходному файлу изображения
-        quality (int): Качество сжатия от 1 до 100
+        logger (logging.Logger): Логгер для записи процесса сжатия
+        origin_height (int): Исходная высота изображения в пикселях
+        origin_width (int): Исходная ширина изображения в пикселях
+        quality (int): Качество сжатия (1-100)
+        DCT_MATRIX (np.ndarray): Матрица для дискретного косинусного преобразования 8x8
+        STANDARD_LUMINANCE_QUANT_TABLE (np.ndarray): Стандартная таблица квантования яркости
+        STANDARD_CHROMINANCE_QUANT_TABLE (np.ndarray): Стандартная таблица квантования цветности
+        STANDARD_LUMINANCE_HUFFMAN_DC_TABLE (dict): Таблица кодов Хаффмана для DC-коэффициентов яркости
+        STANDARD_CHROMINANCE_HUFFMAN_DC_TABLE (dict): Таблица кодов Хаффмана для DC-коэффициентов цветности
+        STANDARD_LUMINANCE_HUFFMAN_AC_TABLE (dict): Таблица кодов Хаффмана для AC-коэффициентов яркости
+        STANDARD_CHROMINANCE_HUFFMAN_AC_TABLE (dict): Таблица кодов Хаффмана для AC-коэффициентов цветности
+    
+    Examples:
+        >>> compressor = JpegCompressor()
+        >>> compressor.compress("input.png", "output.jpg", quality=85)
+        
+    Note:
+        - Поддерживаются форматы ввода: PNG, JPEG, BMP и другие, поддерживаемые PIL
+        - Выходной файл всегда сохраняется в формате JPEG
     """
     
 # private 
@@ -106,46 +132,114 @@ class JpegCompressor:
 # protected
         
     def _setup_logger(self, disable_file=False):
+        """Настраивает логгер с автоматическим созданием конфигурационного файла при его отсутствии.
         
-            # Загружаем конфигурацию YAML
-            with open("logging.yaml", "r") as f:
+        Args:
+            disable_file (bool): Если True, отключает запись логов в файл
+            
+        Returns:
+            logging.Logger: Настроенный логгер для класса JPEGCompressor
+        """
+        
+        default_config = {
+            'version': 1,
+            'formatters': {
+                'console': {
+                    'format': "%(levelname)s: %(message)s"
+                },
+                'file': {
+                    'format': "%(asctime)s - %(levelname)s:\t%(message)s"
+                }
+            },
+            'handlers': {
+                'console': {
+                    'class': 'logging.StreamHandler',
+                    'level': 'INFO',
+                    'formatter': 'console',
+                    'stream': 'ext://sys.stdout'
+                },
+                'file': {
+                    'class': 'logging.FileHandler',
+                    'level': 'DEBUG',
+                    'formatter': 'file',
+                    'filename': 'debug_log.txt',
+                    'encoding': 'utf-8',
+                    'mode': 'w'
+                }
+            },
+            'loggers': {
+                'JPEGCompressor': {
+                    'level': 'DEBUG',
+                    'handlers': ['console', 'file'],
+                    'propagate': False
+                }
+            },
+            'root': {
+                'level': 'INFO',
+                'handlers': ['console']
+            }
+        }
+
+        # Создаем файл конфигурации, если он отсутствует
+        if not os.path.exists("logging.yaml"):
+            self._create_default_logging_config(default_config)
+        
+        # Загружаем конфигурацию YAML
+        try:
+            with open("logging.yaml", "r", encoding='utf-8') as f:
                 config = yaml.safe_load(f)
+        except Exception as e:
+            # Если возникла ошибка при чтении, используем конфиг по умолчанию
+            print(f"Warning: Error reading logging.yaml: {e}. Using default config.")
+            config = default_config
 
-            if disable_file:
-                # Удаляем file-хендлер и ссылки на него
-                config['handlers'].pop('file', None)
-                for logger in config.get('loggers', {}).values():
-                    if 'file' in logger.get('handlers', []):
-                        logger['handlers'].remove('file')
+        if disable_file:
+            # Удаляем file-хендлер и ссылки на него
+            config['handlers'].pop('file', None)
+            for logger in config.get('loggers', {}).values():
+                if 'file' in logger.get('handlers', []):
+                    logger['handlers'].remove('file')
+        else:
+            # Создаём папку logs, если её нет
+            os.makedirs("logs", exist_ok=True)
 
-            else:
-                # Создаём папку logs, если её нет
-                os.makedirs("logs", exist_ok=True)
+            # Формируем поддиректорию по дате, например logs_2025-10-04
+            today = datetime.now().strftime("%Y-%m-%d")
+            dated_log_dir = os.path.join("logs", f"logs_{today}")
+            os.makedirs(dated_log_dir, exist_ok=True)
 
-                # Формируем поддиректорию по дате, например logs_2025-10-04
-                today = datetime.now().strftime("%Y-%m-%d")
-                dated_log_dir = os.path.join("logs", f"logs_{today}")
-                os.makedirs(dated_log_dir, exist_ok=True)
+            # Базовое имя файла
+            base_name = f"debug_log_{today}"
+            ext = ".txt"
 
-                # Базовое имя файла
-                base_name = f"debug_log_{today}"
-                ext = ".txt"
+            # Ищем свободное имя: debug_log_2025-10-04.txt, _1.txt, _2.txt и т.д.
+            i = 0
+            while True:
+                suffix = f"_{i}" if i > 0 else ""
+                filename = os.path.join(dated_log_dir, f"{base_name}{suffix}{ext}")
+                if not os.path.exists(filename):
+                    break
+                i += 1
 
-                # Ищем свободное имя: debug_log_2025-10-04.txt, _1.txt, _2.txt и т.д.
-                i = 0
-                while True:
-                    suffix = f"_{i}"
-                    filename = os.path.join(dated_log_dir, f"{base_name}{suffix}{ext}")
-                    if not os.path.exists(filename):
-                        break
-                    i += 1
+            # Подставляем имя файла в конфиг
+            config['handlers']['file']['filename'] = filename
 
-                # Подставляем имя файла в конфиг
-                config['handlers']['file']['filename'] = filename
+        # Применяем конфигурацию
+        logging.config.dictConfig(config)
+        return logging.getLogger("JPEGCompressor")
 
-            # Применяем конфигурацию
-            logging.config.dictConfig(config)
-            return logging.getLogger("JPEGCompressor")
+    def _create_default_logging_config(self, config_dict):
+        """Создает файл конфигурации логирования по умолчанию.
+        
+        Args:
+            config_dict (dict): Словарь с конфигурацией логирования
+        """
+        try:
+            with open("logging.yaml", "w", encoding='utf-8') as f:
+                yaml.dump(config_dict, f, default_flow_style=False, allow_unicode=True, encoding='utf-8')
+            print("Created default logging.yaml configuration file.")
+        except Exception as e:
+            print(f"Warning: Could not create logging.yaml: {e}")
     
     def log_step(func):
         def wrapper(self, *args, **kwargs):

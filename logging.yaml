@@ -1,33 +1,30 @@
-version: 1
-disable_existing_loggers: False
-
 formatters:
   console:
-    format: "%(levelname)s: %(message)s"
+    format: '%(levelname)s: %(message)s'
   file:
     format: "%(asctime)s - %(levelname)s:\t%(message)s"
-
 handlers:
   console:
     class: logging.StreamHandler
-    level: INFO
     formatter: console
+    level: INFO
     stream: ext://sys.stdout
-
   file:
     class: logging.FileHandler
-    level: DEBUG
-    formatter: file
-    filename: "debug_log.txt"
     encoding: utf-8
+    filename: debug_log.txt
+    formatter: file
+    level: DEBUG
     mode: w
-
 loggers:
   JPEGCompressor:
+    handlers:
+    - console
+    - file
     level: DEBUG
-    handlers: [console, file]
-    propagate: no
-
+    propagate: false
 root:
+  handlers:
+  - console
   level: INFO
-  handlers: [console]
+version: 1
