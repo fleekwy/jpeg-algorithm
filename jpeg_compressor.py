@@ -31,6 +31,8 @@ class JpegCompressor:
         
         self._original_pixels = None
         self._compressed_pixels = None
+        self.origin_height = None
+        self.origin_width = None
         self.quality = None
         self.DCT_MATRIX = self._create_dctII_matrix(8)
         self.STANDARD_LUMINANCE_QUANT_TABLE = np.array([
@@ -53,16 +55,53 @@ class JpegCompressor:
             [99, 99, 99, 99, 99, 99, 99, 99],
             [99, 99, 99, 99, 99, 99, 99, 99]], dtype=np.uint8)
         
-        # для категорий DC: 0..11
-        self.dc_freq = {
-                'Y' : {},
-                'C' : {}
-            }
-        # 162 возможных кода AC (по JPEG)
-        self.ac_freq = {
-                'Y' : {},
-                'C' : {}
-            }
+        self.STANDARD_LUMINANCE_HUFFMAN_DC_TABLE = None
+        self.STANDARD_CHROMINANCE_HUFFMAN_DC_TABLE = None
+        self.STANDARD_LUMINANCE_HUFFMAN_AC_TABLE = None
+        self.STANDARD_CHROMINANCE_HUFFMAN_AC_TABLE = None
+        
+        
+        self.Y_DC_HUFFMAN_BITS = [0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+        self.Y_DC_HUFFMAN_VALS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        
+        self.C_DC_HUFFMAN_BITS = [0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
+        self.C_DC_HUFFMAN_VALS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+
+        self.Y_AC_HUFFMAN_BITS = [0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 125]
+        self.Y_AC_HUFFMAN_VALS = [
+            0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07,
+            0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08, 0x23, 0x42, 0xB1, 0xC1, 0x15, 0x52, 0xD1, 0xF0,
+            0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0A, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x25, 0x26, 0x27, 0x28,
+            0x29, 0x2A, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49,
+            0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69,
+            0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
+            0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
+            0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3, 0xC4, 0xC5,
+            0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xE1, 0xE2,
+            0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
+            0xF9, 0xFA
+        ]
+
+        self.C_AC_HUFFMAN_BITS = [0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 119]
+        self.C_AC_HUFFMAN_VALS = [
+            0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21, 0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71,
+            0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91, 0xA1, 0xB1, 0xC1, 0x09, 0x23, 0x33, 0x52, 0xF0,
+            0x15, 0x62, 0x72, 0xD1, 0x0A, 0x16, 0x24, 0x34, 0xE1, 0x25, 0xF1, 0x17, 0x18, 0x19, 0x1A, 0x26,
+            0x27, 0x28, 0x29, 0x2A, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
+            0x49, 0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68,
+            0x69, 0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+            0x88, 0x89, 0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5,
+            0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3,
+            0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA,
+            0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
+            0xF9, 0xFA
+        ]
+
+        # --- Сгенерированные таблицы для быстрого доступа ---
+        self.STANDARD_LUMINANCE_HUFFMAN_DC_TABLE = self._generate_huffman_table(self.Y_DC_HUFFMAN_BITS, self.Y_DC_HUFFMAN_VALS)
+        self.STANDARD_CHROMINANCE_HUFFMAN_DC_TABLE = self._generate_huffman_table(self.C_DC_HUFFMAN_BITS, self.C_DC_HUFFMAN_VALS)
+        self.STANDARD_LUMINANCE_HUFFMAN_AC_TABLE = self._generate_huffman_table(self.Y_AC_HUFFMAN_BITS, self.Y_AC_HUFFMAN_VALS)
+        self.STANDARD_CHROMINANCE_HUFFMAN_AC_TABLE = self._generate_huffman_table(self.C_AC_HUFFMAN_BITS, self.C_AC_HUFFMAN_VALS)
         
         self.logger.info("__init__: <end>")
         
@@ -128,6 +167,8 @@ class JpegCompressor:
     def _reset_state(self):
         self._original_pixels = None
         self._compressed_pixels = None
+        self.origin_height = None
+        self.origin_width = None
         self.quality = None
 
     @log_step
@@ -141,53 +182,28 @@ class JpegCompressor:
         return dct_mat.astype('float32')
     
     @log_step
-    def _build_huffman_table(self, freq_dict):
-        """Строит Хаффман-таблицу из словаря частот"""
-        import heapq
-
-        heap = [[weight, [symbol, ""]] for symbol, weight in freq_dict.items() if weight > 0]
-        heapq.heapify(heap)
-
-        while len(heap) > 1:
-            lo = heapq.heappop(heap)
-            hi = heapq.heappop(heap)
-            for pair in lo[1:]:
-                pair[1] = '0' + pair[1]
-            for pair in hi[1:]:
-                pair[1] = '1' + pair[1]
-            heapq.heappush(heap, [lo[0] + hi[0]] + lo[1:] + hi[1:])
-
-        return {symbol: code for symbol, code in heap[0][1:]}
-
-    @log_step
-    def _generate_all_huffman_tables(self):
-        """Генерирует 4 таблицы Хаффмана: DC_Y, DC_C, AC_Y, AC_C"""
-
-        # DC таблицы: категории 0–11
-        dc_y_table = self._build_huffman_table(self.dc_freq['Y'])
-        dc_c_table = self._build_huffman_table(self.dc_freq['C'])
-
-        # AC таблицы: пары (run, size)
-        ac_y_table = self._build_huffman_table(self.ac_freq['Y'])
-        ac_c_table = self._build_huffman_table(self.ac_freq['C'])
-
-        huffman_tables = {
-            "DC_Y": dc_y_table,
-            "DC_C": dc_c_table,
-            "AC_Y": ac_y_table,
-            "AC_C": ac_c_table
+    def _generate_huffman_table(self, bits, huffval):
+        """Генерирует таблицу кодов Хаффмана из стандартных BITS и HUFFVAL."""
+        codes = {}
+        huffsize = {}
+        k = 0
+        code = 0
+        for i in range(16):
+            length = i + 1
+            for _ in range(bits[i]):
+                symbol = huffval[k]
+                codes[symbol] = code
+                huffsize[symbol] = length
+                k += 1
+                code += 1
+            code <<= 1
+            
+        return {
+            'CODES' : codes,
+            'HUFFSIZE' : huffsize
         }
-
-        self.logger.debug(f"""
-    Generation Huffman tables: Success
-    DC_Y_table size: {len(dc_y_table)}
-    AC_Y_table size: {len(ac_y_table)}
-    DC_Y_table: {dict(list(dc_y_table.items()))}
-    AC_Y_table: {dict(list(ac_y_table.items()))}
-    """)
-        
-        return huffman_tables
     
+    @log_step
     def _scale_quant_table(self, table, quality):
         if quality < 50:
             scale = 5000 / quality
@@ -240,7 +256,7 @@ class JpegCompressor:
     def _chroma_subsampling(self, ycbcr: dict):
         """Хроматическое прореживание 4:2:0 с паддингом и усреднением"""
         
-        original_height, original_width = self._original_pixels.shape[:2]
+        original_height, original_width = self.origin_height, self.origin_width
         
         # Вычисляем размеры с паддингом
         padded_height = original_height + (original_height % 2)
@@ -470,74 +486,6 @@ class JpegCompressor:
                 bits = format((1 << size) - 1 + value, f"0{size}b")  # инверсия
             return size, bits
 
-    @log_step
-    def _dc_differentiation(self, quantized):
-        """
-        Выполняет дифференциальное кодирование (DPCM) DC-коэффициентов
-        для всех компонент (Y, Cb, Cr) и преобразует их в пары (SIZE, VALUE_BITS),
-        а также параллельно собирает информацию о частотах DC-компонент в словарь.
-
-        Args:
-            quantized (dict): {
-                'Y_quant': np.ndarray,
-                'Cb_quant': np.ndarray,
-                'Cr_quant': np.ndarray
-            }
-            
-            Size: (m, n, 8, 8), [0, 0] — DC-component.
-
-        Returns:
-            dict: {
-                'Y_dc_encoded': list,  # [{'size': int, 'value_bits': str}, ...]
-                'Cb_dc_encoded': list, # [{'size': int, 'value_bits': str}, ...]
-                'Cr_dc_encoded': list  # [{'size': int, 'value_bits': str}, ...]
-            }
-
-            - **size (int)**: Количество бит, необходимое для представления
-                дифференциала.
-            - **value_bits (str)**: Строковое представление битов
-                дифференциала (с учетом инверсии для отрицательных чисел)
-        """
-
-        def dc_diff(blocks: np.ndarray) -> np.ndarray:
-            """Извлекает DC-компоненты и вычисляет дифференциалы."""
-            dc_values = blocks[:, :, 0, 0].flatten()
-            dc_diffs = np.diff(np.insert(dc_values, 0, 0))  # первый относительно 0
-            return dc_diffs
-
-        def encode_dc_channel(blocks: np.ndarray, freq_key: str) -> list[dict]:
-            """Кодирует все DC-компоненты канала в список словарей."""
-            diffs = dc_diff(blocks)
-            encoded = []
-            for diff in diffs:
-                size, bits = self._value_to_bits(diff)
-                # собираем статистику (частоты категорий)
-                self.dc_freq.setdefault(freq_key, {})
-                self.dc_freq[freq_key][size] = self.dc_freq[freq_key].get(size, 0) + 1
-                encoded.append({"size": size, "value_bits": bits})
-            return encoded
-
-        # Обработка каждого канала независимо
-        Y_dc_encoded = encode_dc_channel(quantized['Y_quant'], 'Y')
-        Cb_dc_encoded = encode_dc_channel(quantized['Cb_quant'], 'C')
-        Cr_dc_encoded = encode_dc_channel(quantized['Cr_quant'], 'C')
-
-        self.logger.debug(f"""
-        DC-differentiation: Success
-        Y_dc count: {len(Y_dc_encoded)}
-        Cb_dc count: {len(Cb_dc_encoded)}
-        Cr_dc count: {len(Cr_dc_encoded)}
-        First 8 Y-diffs: {[item for item in np.array([b['size'] for b in Y_dc_encoded[:8]])]}
-        First 8 Y value bits: {[b['value_bits'] for b in Y_dc_encoded[:8]]}
-        """)
-
-        return {
-            'Y_dc_encoded': Y_dc_encoded,
-            'Cb_dc_encoded': Cb_dc_encoded,
-            'Cr_dc_encoded': Cr_dc_encoded,
-        }
-
-
     def _zigzag_scanning(self, block):
         """Зигзаг-сканирование одного блока NxN"""
         
@@ -565,199 +513,121 @@ class JpegCompressor:
                 temp.reverse()  # чётные диагонали — снизу вверх
             for i, j in temp:
                 result.append(block[i, j])
-                        
-    #     self.logger.debug(f"""
-    # Zigzag-scanning: Success
-    # Size of zigzag-array: {len(result)}
-    # Zigzag array:
-    #     {[int(el) for el in result]}\n""") 
                     
         return result
 
-    def _run_length_encoding(self, ac_coeffs, freq_key):
-        """
-        Выполняет JPEG RLE-кодирование AC-коэффициентов: (RUN, SIZE) + битовое значение.
-        Также автоматически собирает статистику частот в словаре self.ac_freq_dict.
-
-        Args:
-            ac_coeffs (np.ndarray): Массив AC-коэффициентов одного блока (после зигзага, исключая DC)
-
-        Returns:
-            dict: {
-                'rle': list of (RUN, SIZE) пар,
-                'values': list of битовых строк для коэффициентов
-            }
-        """
-        rle = []
-        values = []
-        zero_run = 0
-        self.ac_freq.setdefault(freq_key, {})
-        for coeff in ac_coeffs:
-            if coeff == 0:
-                zero_run += 1
-                if zero_run == 16:
-                    symbol = (15, 0)
-                    rle.append(symbol)
-                    values.append("")
-                    self.ac_freq[freq_key][symbol] = self.ac_freq[freq_key].get(symbol, 0) + 1
-                    zero_run = 0
-            else:
-                size = int(math.floor(math.log2(abs(coeff)))) + 1
-                symbol = (zero_run, size)
-                # распакуем (size, bits) — чтобы values содержал строку бит
-                size_expected, bits = self._value_to_bits(coeff) if isinstance(self._value_to_bits(coeff), tuple) else (size, self._value_to_bits(coeff))
-                rle.append(symbol)
-                values.append(bits)
-                self.ac_freq[freq_key][symbol] = self.ac_freq[freq_key].get(symbol, 0) + 1
-                zero_run = 0
-
-        # Если остались нули в конце блока → EOB
-        if zero_run > 0:
-            rle.append((0, 0))
-            values.append("")
-            self.ac_freq[freq_key][(0, 0)] = self.ac_freq[freq_key].get((0, 0), 0) + 1
-
-        return {"rle": rle, "values": values}
-
     @log_step
-    def _encode_rle_ac_components(self, quantized):
+    def _huffman_encoding(self, quantized_blocks: dict):
         """
-        Применяет зигзагообразное сканирование и RLE к AC-коэффициентам.
-
-        Для всех квантованных блоков (Y, Cb, Cr) функция извлекает 
-        AC-коэффициенты (исключая DC), выполняет RLE-кодирование (Run-Length
-        Encoding) и подготавливает данные для кодирования Хаффмана.
-
-        Args:
-            quantized (dict): {
-                'Y_quant': np.ndarray,
-                'Cb_quant': np.ndarray,
-                'Cr_quant': np.ndarray
-            }
-            
-            Size: (m, n, 8, 8), [0, 0] — DC-component (исключается).
-
-        Returns:
-            dict: {
-                'Y_ac_rle': list,  # [{'rle': int, 'value_bits': str}, ...]
-                'Cb_ac_rle': list, # [{'rle': int, 'value_bits': str}, ...]
-                'Cr_ac_rle': list  # [{'rle': int, 'value_bits': str}, ...]
-            }
-
-            - **rle (list)**: Список пар (RUN, SIZE). RUN — количество нулей, 
-              SIZE — количество бит для ненулевого коэффициента.
-            - **values (list)**: Список строковых представлений битов
-              ненулевых AC-коэффициентов (амплитуд).
+        Выполняет кодирование Хаффмана с корректным чередованием MCU для 4:2:0.
         """
+        bitstream = ""
+        bit_buffer = 0
+        bit_buffer_len = 0
+
+        def write_bits(code, size):
+            nonlocal bit_buffer, bit_buffer_len, bitstream
+            bit_buffer = (bit_buffer << size) | code
+            bit_buffer_len += size
+            while bit_buffer_len >= 8:
+                byte_to_write = (bit_buffer >> (bit_buffer_len - 8)) & 0xFF
+                bitstream += chr(byte_to_write)
+                if byte_to_write == 0xFF:
+                    bitstream += chr(0x00) # Byte stuffing
+                bit_buffer_len -= 8
         
-        def process_channel(channel_blocks, freq_key):
-            h, w = channel_blocks.shape[:2]
-            flat_rle_list = []
+        # Предыдущие DC значения для DPCM
+        prev_dc = {'Y': 0, 'Cb': 0, 'Cr': 0}
 
-            for i in range(h):
-                for j in range(w):
-                    block = channel_blocks[i, j]
-                    zigzag = self._zigzag_scanning(block)
-                    ac_coeffs = zigzag[1:]  # исключаем DC
+        # Получаем блоки
+        Y_quant = quantized_blocks['Y']
+        Cb_quant = quantized_blocks['Cb']
+        Cr_quant = quantized_blocks['Cr']
 
-                    # RLE для одного блока
-                    rle_result = self._run_length_encoding(ac_coeffs, freq_key)
-                    rle_pairs = rle_result["rle"]
-                    values = rle_result["values"]
+        h_mcu = Y_quant.shape[0] // 2
+        w_mcu = Y_quant.shape[1] // 2
+        
+        self.logger.debug(f"Total MCUs to process: {h_mcu * w_mcu} ({h_mcu}x{w_mcu})")
 
-                    # Преобразуем в список словарей
-                    for (run, size), val in zip(rle_pairs, values):
-                        flat_rle_list.append({
-                            "rle": (run, size),
-                            "value_bits": val
-                        })
+        for i in range(h_mcu):
+            for j in range(w_mcu):
+                # --- Один MCU (4 Y, 1 Cb, 1 Cr) ---
+                y_blocks_mcu = [
+                    Y_quant[i*2, j*2], Y_quant[i*2, j*2+1],
+                    Y_quant[i*2+1, j*2], Y_quant[i*2+1, j*2+1]
+                ]
+                mcu_blocks = [
+                    (y_blocks_mcu[0], 'Y'), (y_blocks_mcu[1], 'Y'), (y_blocks_mcu[2], 'Y'), (y_blocks_mcu[3], 'Y'),
+                    (Cb_quant[i,j], 'Cb'),
+                    (Cr_quant[i,j], 'Cr')
+                ]
 
-            return flat_rle_list
+                for block, ch_type in mcu_blocks:
+                    # --- Обработка одного блока внутри MCU ---
+                    zigzag_coeffs = self._zigzag_scanning(block)
+                    
+                    # 1. DC коэффициент
+                    dc_val = zigzag_coeffs[0]
+                    dc_diff = dc_val - prev_dc[ch_type]
+                    prev_dc[ch_type] = dc_val
+                    
+                    dc_size, dc_bits_str = self._value_to_bits(dc_diff)
+                    
+                    dc_codes = self.STANDARD_LUMINANCE_HUFFMAN_DC_TABLE['CODES'] if ch_type == 'Y' else self.STANDARD_CHROMINANCE_HUFFMAN_DC_TABLE['CODES']
+                    dc_huffsize = self.STANDARD_LUMINANCE_HUFFMAN_DC_TABLE['HUFFSIZE'] if ch_type == 'Y' else self.STANDARD_CHROMINANCE_HUFFMAN_DC_TABLE['HUFFSIZE']
+                    
+                    huff_code = dc_codes[dc_size]
+                    huff_size = dc_huffsize[dc_size]
+                    
+                    write_bits(huff_code, huff_size)
+                    if dc_size > 0:
+                        write_bits(int(dc_bits_str, 2), dc_size)
 
-        # Обрабатываем три канала
-        Y_ac_rle = process_channel(quantized['Y_quant'], 'Y')
-        Cb_ac_rle = process_channel(quantized['Cb_quant'], 'C')
-        Cr_ac_rle = process_channel(quantized['Cr_quant'], 'C')
+                    # 2. AC коэффициенты
+                    ac_coeffs = zigzag_coeffs[1:]
+                    zero_run = 0
+                    
+                    ac_codes = self.STANDARD_LUMINANCE_HUFFMAN_AC_TABLE['CODES'] if ch_type == 'Y' else self.STANDARD_CHROMINANCE_HUFFMAN_AC_TABLE['CODES']
+                    ac_huffsize = self.STANDARD_LUMINANCE_HUFFMAN_AC_TABLE['HUFFSIZE'] if ch_type == 'Y' else self.STANDARD_CHROMINANCE_HUFFMAN_AC_TABLE['HUFFSIZE']
 
-        # Пример для логов
-        sample = Y_ac_rle[:10]
-        self.logger.debug(f"""
-        RLE-encoding (flat): Success
-        Total Y-AC symbols: {len(Y_ac_rle)}
-        First 10 Y-AC entries:
-            {sample}
-        """)
+                    for coeff in ac_coeffs:
+                        if coeff == 0:
+                            zero_run += 1
+                        else:
+                            while zero_run >= 16:
+                                # ZRL (Zero Run Length)
+                                write_bits(ac_codes[0xF0], ac_huffsize[0xF0])
+                                zero_run -= 16
+                            
+                            ac_size, ac_bits_str = self._value_to_bits(coeff)
+                            
+                            # (run, size)
+                            symbol = (zero_run << 4) | ac_size
+                            
+                            huff_code = ac_codes[symbol]
+                            huff_size = ac_huffsize[symbol]
+                            
+                            write_bits(huff_code, huff_size)
+                            write_bits(int(ac_bits_str, 2), ac_size)
+                            
+                            zero_run = 0
+                    
+                    # EOB (End of Block)
+                    if zero_run > 0 or np.all(ac_coeffs == 0):
+                        write_bits(ac_codes[0x00], ac_huffsize[0x00])
 
-        self.logger.debug(f"""
-        AC-Y frequency (top 10): {dict(sorted(self.ac_freq['Y'].items(), key=lambda x: x[1], reverse=True)[:10])}
-        AC-Cb frequency (top 10): {dict(sorted(self.ac_freq['C'].items(), key=lambda x: x[1], reverse=True)[:10])}
-        """)
-
-        return {
-            'Y_ac_rle': Y_ac_rle,
-            'Cb_ac_rle': Cb_ac_rle,
-            'Cr_ac_rle': Cr_ac_rle,
-        }
-    
-    @log_step
-    def _huffman_encoding(self, dc_components, ac_components, huffman_tables):
-        """Хаффман-кодирование DC и AC-компонентов по JPEG-таблицам"""
-
-        def encode_channel(dc_list, ac_list, dc_table, ac_table):
-            bitstream = ""
-            ac_index = 0  # указатель в общем списке AC
-
-            for dc in dc_list:
-                # --- DC ---
-                size = dc["size"]
-                value_bits = dc["value_bits"]
-                huff_dc = dc_table.get(size, "")
-                bitstream += huff_dc + value_bits
-
-                # --- AC ---
-                # читаем AC-коэффициенты для одного блока
-                while ac_index < len(ac_list):
-                    run, size = ac_list[ac_index]["rle"]
-                    value_bits = ac_list[ac_index]["value_bits"]
-                    ac_index += 1
-                    huff_ac = ac_table.get((run, size), "")
-                    bitstream += huff_ac + value_bits
-
-                    # EOB → значит, блок окончен
-                    if (run, size) == (0, 0):
-                        break
-
-            return bitstream
-
-        # Кодируем каждый канал
-        Y_bits = encode_channel(
-            dc_components["Y_dc_encoded"], ac_components["Y_ac_rle"],
-            huffman_tables["DC_Y"], huffman_tables["AC_Y"]
-        )
-        Cb_bits = encode_channel(
-            dc_components["Cb_dc_encoded"], ac_components["Cb_ac_rle"],
-            huffman_tables["DC_C"], huffman_tables["AC_C"]
-        )
-        Cr_bits = encode_channel(
-            dc_components["Cr_dc_encoded"], ac_components["Cr_ac_rle"],
-            huffman_tables["DC_C"], huffman_tables["AC_C"]
-        )
-
-        self.logger.debug(f"""
-        Huffman encoding: Success
-        Y bits length: {len(Y_bits)}
-        Cb bits length: {len(Cb_bits)}
-        Cr bits length: {len(Cr_bits)}
-        First 512 bits of Y:
-            {Y_bits[:512]}
-        """)
-
-        return {
-            "Y_bits": Y_bits,
-            "Cb_bits": Cb_bits,
-            "Cr_bits": Cr_bits,
-            "bitstream": Y_bits + Cb_bits + Cr_bits
-        }
+        # Завершение битового потока (padding)
+        if bit_buffer_len > 0:
+            # Паддинг единицами до полного байта
+            pad_len = 8 - bit_buffer_len
+            code = (bit_buffer << pad_len) | ((1 << pad_len) - 1)
+            byte_to_write = code & 0xFF
+            bitstream += chr(byte_to_write)
+            if byte_to_write == 0xFF:
+                bitstream += chr(0x00)
+        
+        # Конвертация в байты
+        return bitstream.encode('latin-1')
 
     
     @log_step
@@ -827,6 +697,7 @@ class JpegCompressor:
             # Преобразуем изображение в числовую матрицу для дальнейших преобразований
             self._original_pixels = np.array(image, dtype=np.float32)
             self.quality = quality
+            self.origin_height, self.origin_width = self._original_pixels.shape[:2]
             
         except Exception as e:
             self._reset_state()
@@ -847,8 +718,11 @@ class JpegCompressor:
         dict_blocks = self._split_into_blocks(subsampled)
         dict_dct_blocks = self._apply_dct(dict_blocks)
         dict_quant_blocks = self._apply_quantization(dict_dct_blocks)
-        dc_components = self._dc_differentiation(dict_quant_blocks)
-        ac_components = self._encode_rle_ac_components(dict_quant_blocks)
-        huffman_tables = self._generate_all_huffman_tables()
-        bitstream = self._huffman_encoding(dc_components, ac_components, huffman_tables)['bitstream']
-        self._create_jpeg(bitstream, "data/"+compressed_image_name)
+        image_data = self._huffman_encoding(dict_quant_blocks)
+        
+        # Убедимся, что директория для сохранения существует
+        output_dir = "data"
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, compressed_image_name)
+
+        self._create_jpeg(image_data, output_path)
