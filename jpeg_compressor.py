@@ -503,115 +503,139 @@ class JpegCompressor:
     @log_step
     def _huffman_encoding(self, quantized_blocks: dict):
         """
-        Выполняет кодирование Хаффмана с корректным чередованием MCU для 4:2:0.
+        Быстрое Хаффман-кодирование с MCU 4:2:0, минимум аллокаций и вызовов.
+        Возвращает bytes.
         """
-        bitstream = ""
+        import numpy as _np  # локальная ссылка
+
+        out = bytearray()
         bit_buffer = 0
-        bit_buffer_len = 0
+        bit_len = 0
 
-        def write_bits(code, size):
-            nonlocal bit_buffer, bit_buffer_len, bitstream
-            bit_buffer = (bit_buffer << size) | code
-            bit_buffer_len += size
-            while bit_buffer_len >= 8:
-                byte_to_write = (bit_buffer >> (bit_buffer_len - 8)) & 0xFF
-                bitstream += chr(byte_to_write)
-                if byte_to_write == 0xFF:
-                    bitstream += chr(0x00) # Byte stuffing
-                bit_buffer_len -= 8
-        
-        # Предыдущие DC значения для DPCM
+        def write_bits_fast(code: int, size: int):
+            nonlocal bit_buffer, bit_len, out
+            bit_buffer = (bit_buffer << size) | (code & ((1 << size) - 1))
+            bit_len += size
+            while bit_len >= 8:
+                shift = bit_len - 8
+                byte = (bit_buffer >> shift) & 0xFF
+                out.append(byte)
+                if byte == 0xFF:
+                    out.append(0x00)
+                bit_len -= 8
+                bit_buffer &= (1 << shift) - 1 if shift > 0 else 0
+
+        # локализуем часто используемые таблицы/функции
         prev_dc = {'Y': 0, 'Cb': 0, 'Cr': 0}
-
-        # Получаем блоки
         Y_quant = quantized_blocks['Y']
         Cb_quant = quantized_blocks['Cb']
         Cr_quant = quantized_blocks['Cr']
 
+        # Локализация для ускорения
+        lum_dc_codes = self.STANDARD_LUMINANCE_HUFFMAN_DC_TABLE['CODES']
+        chr_dc_codes = self.STANDARD_CHROMINANCE_HUFFMAN_DC_TABLE['CODES']
+        lum_dc_sizes = self.STANDARD_LUMINANCE_HUFFMAN_DC_TABLE['HUFFSIZE']
+        chr_dc_sizes = self.STANDARD_CHROMINANCE_HUFFMAN_DC_TABLE['HUFFSIZE']
+
+        lum_ac_codes = self.STANDARD_LUMINANCE_HUFFMAN_AC_TABLE['CODES']
+        chr_ac_codes = self.STANDARD_CHROMINANCE_HUFFMAN_AC_TABLE['CODES']
+        lum_ac_sizes = self.STANDARD_LUMINANCE_HUFFMAN_AC_TABLE['HUFFSIZE']
+        chr_ac_sizes = self.STANDARD_CHROMINANCE_HUFFMAN_AC_TABLE['HUFFSIZE']
+
+        # локальные методы класса
+        zigzag = self._zigzag_scanning
+        value_to_bits = self._value_to_bits
+
         h_mcu = Y_quant.shape[0] // 2
         w_mcu = Y_quant.shape[1] // 2
-        
-        self.logger.debug(f"Total MCUs to process: {h_mcu * w_mcu} ({h_mcu}x{w_mcu})")
 
+        # ускоренный обход MCU
         for i in range(h_mcu):
+            base_i2 = i * 2
             for j in range(w_mcu):
-                # --- Один MCU (4 Y, 1 Cb, 1 Cr) ---
-                y_blocks_mcu = [
-                    Y_quant[i*2, j*2], Y_quant[i*2, j*2+1],
-                    Y_quant[i*2+1, j*2], Y_quant[i*2+1, j*2+1]
-                ]
-                mcu_blocks = [
-                    (y_blocks_mcu[0], 'Y'), (y_blocks_mcu[1], 'Y'), (y_blocks_mcu[2], 'Y'), (y_blocks_mcu[3], 'Y'),
-                    (Cb_quant[i,j], 'Cb'),
-                    (Cr_quant[i,j], 'Cr')
-                ]
+                base_j2 = j * 2
+                # собираем 4 блока Y и Cb, Cr
+                y0 = Y_quant[base_i2, base_j2]
+                y1 = Y_quant[base_i2, base_j2 + 1]
+                y2 = Y_quant[base_i2 + 1, base_j2]
+                y3 = Y_quant[base_i2 + 1, base_j2 + 1]
+                cb = Cb_quant[i, j]
+                cr = Cr_quant[i, j]
 
-                for block, ch_type in mcu_blocks:
-                    # --- Обработка одного блока внутри MCU ---
-                    zigzag_coeffs = self._zigzag_scanning(block)
-                    
-                    # 1. DC коэффициент
-                    dc_val = zigzag_coeffs[0]
-                    dc_diff = dc_val - prev_dc[ch_type]
-                    prev_dc[ch_type] = dc_val
-                    
-                    dc_size, dc_bits_str = self._value_to_bits(dc_diff)
-                    
-                    dc_codes = self.STANDARD_LUMINANCE_HUFFMAN_DC_TABLE['CODES'] if ch_type == 'Y' else self.STANDARD_CHROMINANCE_HUFFMAN_DC_TABLE['CODES']
-                    dc_huffsize = self.STANDARD_LUMINANCE_HUFFMAN_DC_TABLE['HUFFSIZE'] if ch_type == 'Y' else self.STANDARD_CHROMINANCE_HUFFMAN_DC_TABLE['HUFFSIZE']
-                    
-                    huff_code = dc_codes[dc_size]
-                    huff_size = dc_huffsize[dc_size]
-                    
-                    write_bits(huff_code, huff_size)
-                    if dc_size > 0:
-                        write_bits(int(dc_bits_str, 2), dc_size)
+                # порядок блоков внутри MCU
+                blocks = ((y0, 'Y'), (y1, 'Y'), (y2, 'Y'), (y3, 'Y'), (cb, 'Cb'), (cr, 'Cr'))
 
-                    # 2. AC коэффициенты
-                    ac_coeffs = zigzag_coeffs[1:]
+                for block, ch in blocks:
+                    coeffs = zigzag(block)  # ожидается iterable длины 64
+                    # DC
+                    dc = int(coeffs[0])
+                    diff = dc - prev_dc[ch]
+                    prev_dc[ch] = dc
+
+                    dc_size, dc_bits_str = value_to_bits(diff)
+                    if ch == 'Y':
+                        huff_code = lum_dc_codes[dc_size]
+                        huff_size = lum_dc_sizes[dc_size]
+                    else:
+                        huff_code = chr_dc_codes[dc_size]
+                        huff_size = chr_dc_sizes[dc_size]
+
+                    write_bits_fast(huff_code, huff_size)
+                    if dc_size:
+                        write_bits_fast(int(dc_bits_str, 2), dc_size)
+
+                    # AC
+                    ac = coeffs[1:]  # последовательность 63
                     zero_run = 0
-                    
-                    ac_codes = self.STANDARD_LUMINANCE_HUFFMAN_AC_TABLE['CODES'] if ch_type == 'Y' else self.STANDARD_CHROMINANCE_HUFFMAN_AC_TABLE['CODES']
-                    ac_huffsize = self.STANDARD_LUMINANCE_HUFFMAN_AC_TABLE['HUFFSIZE'] if ch_type == 'Y' else self.STANDARD_CHROMINANCE_HUFFMAN_AC_TABLE['HUFFSIZE']
+                    if ch == 'Y':
+                        ac_codes = lum_ac_codes
+                        ac_sizes = lum_ac_sizes
+                    else:
+                        ac_codes = chr_ac_codes
+                        ac_sizes = chr_ac_sizes
 
-                    for coeff in ac_coeffs:
-                        if coeff == 0:
+                    # пробегаем коэффициенты
+                    # минимизируем Python-обороты внутри цикла
+                    for c in ac:
+                        if c == 0:
                             zero_run += 1
-                        else:
-                            while zero_run >= 16:
-                                # ZRL (Zero Run Length)
-                                write_bits(ac_codes[0xF0], ac_huffsize[0xF0])
-                                zero_run -= 16
-                            
-                            ac_size, ac_bits_str = self._value_to_bits(coeff)
-                            
-                            # (run, size)
-                            symbol = (zero_run << 4) | ac_size
-                            
-                            huff_code = ac_codes[symbol]
-                            huff_size = ac_huffsize[symbol]
-                            
-                            write_bits(huff_code, huff_size)
-                            write_bits(int(ac_bits_str, 2), ac_size)
-                            
-                            zero_run = 0
-                    
-                    # EOB (End of Block)
-                    if zero_run > 0 or np.all(ac_coeffs == 0):
-                        write_bits(ac_codes[0x00], ac_huffsize[0x00])
+                            continue
+                        while zero_run >= 16:
+                            zrl_code = ac_codes[0xF0]
+                            zrl_size = ac_sizes[0xF0]
+                            write_bits_fast(zrl_code, zrl_size)
+                            zero_run -= 16
 
-        # Завершение битового потока (padding)
-        if bit_buffer_len > 0:
-            # Паддинг единицами до полного байта
-            pad_len = 8 - bit_buffer_len
-            code = (bit_buffer << pad_len) | ((1 << pad_len) - 1)
-            byte_to_write = code & 0xFF
-            bitstream += chr(byte_to_write)
-            if byte_to_write == 0xFF:
-                bitstream += chr(0x00)
-        
-        # Конвертация в байты
-        return bitstream.encode('latin-1')
+                        ac_size, ac_bits_str = value_to_bits(c)
+                        symbol = (zero_run << 4) | ac_size
+                        huff_code = ac_codes[symbol]
+                        huff_size = ac_sizes[symbol]
+                        write_bits_fast(huff_code, huff_size)
+                        write_bits_fast(int(ac_bits_str, 2), ac_size)
+                        zero_run = 0
+
+                    # EOB: если после всех коэффициентов остались нули
+                    # проверка на все нули AC быстрее как простой zero_run>0, но
+                    # если блок был полностью нулевой zero_run==63 - EOB нужен
+                    if zero_run > 0:
+                        eob_code = ac_codes[0x00]
+                        eob_size = ac_sizes[0x00]
+                        write_bits_fast(eob_code, eob_size)
+                    else:
+                        # случая, когда все AC == 0 (zero_run == 63) тоже покрыт выше
+                        pass
+
+        # дописать паддинг единицами до полного байта
+        if bit_len:
+            pad = 8 - bit_len
+            pad_bits = (1 << pad) - 1
+            final = (bit_buffer << pad) | pad_bits
+            out.append(final & 0xFF)
+            if (final & 0xFF) == 0xFF:
+                out.append(0x00)
+
+        return bytes(out)
+
     
     @log_step
     def _create_app0_segment(self) -> bytes:
