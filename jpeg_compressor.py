@@ -49,7 +49,6 @@ class JpegCompressor:
 # private 
     
     def __init__(self):
-        """Первоначальная инициализация состояния объекта"""
         
         self.logger = self._setup_logger(os.getenv("DISABLE_FILE_LOGGING") == "1")
         
@@ -132,7 +131,7 @@ class JpegCompressor:
 # protected
         
     def _setup_logger(self, disable_file=False):
-        """Настраивает логгер с автоматическим созданием конфигурационного файла при его отсутствии.
+        """Настраивает логгер с автоматическим созданием конфигурационного файла logging.yaml при его отсутствии.
         
         Args:
             disable_file (bool): Если True, отключает запись логов в файл
@@ -560,7 +559,7 @@ class JpegCompressor:
 
     def _value_to_bits(self, value: int) -> tuple[int, str]:
             """Возвращает (size, bits) по стандарту JPEG."""
-            # Convert numpy int to python int to use .bit_length()
+            # Конвертируем numpy-int в python-int чтобы применить .bit_length()
             py_value = int(value)
 
             if py_value == 0:
@@ -597,7 +596,6 @@ class JpegCompressor:
         Быстрое Хаффман-кодирование с MCU 4:2:0, минимум аллокаций и вызовов.
         Возвращает bytes.
         """
-        import numpy as _np  # локальная ссылка
 
         out = bytearray()
         bit_buffer = 0
