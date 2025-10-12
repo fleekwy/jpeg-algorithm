@@ -53,21 +53,6 @@ class JpegCompressor:
             [99, 99, 99, 99, 99, 99, 99, 99],
             [99, 99, 99, 99, 99, 99, 99, 99]], dtype=np.uint8)
         
-        self.STANDARD_DC_TABLE = {
-            0: '00',
-            1: '010',
-            2: '011',
-            3: '100',
-            4: '101',
-            5: '110',
-            6: '1110',
-            7: '11110',
-            8: '111110',
-            9: '1111110',
-            10: '11111110',
-            11: '111111110'
-        }
-        
         # для категорий DC: 0..11
         self.dc_freq = {
                 'Y' : {},
@@ -237,10 +222,6 @@ class JpegCompressor:
         Y = np.clip(Y, 16, 235)
         Cb = np.clip(Cb, 16, 240)
         Cr = np.clip(Cr, 16, 240)
-        
-        # Протестируем
-        # pixels_uint8 = np.clip(ycbcr_pixels, 0, 255).astype(np.uint8)
-        # Image.fromarray(pixels_uint8).save("data/output_1.jpeg")
         
         self.logger.debug(f"""
     Transform RGB → YCbCr: Success
@@ -477,18 +458,6 @@ class JpegCompressor:
             'Cb_quant': Cb_quant,
             'Cr_quant': Cr_quant
         }
-
-
-    # def _value_to_bits(self, value: int) -> str:
-    #     """Преобразует значение коэффициента в 'сырые' биты (по JPEG)."""
-    #     if value == 0:
-    #         return ""
-    #     size = int(math.floor(math.log2(abs(value)))) + 1
-    #     if value > 0:
-    #         return format(value, f"0{size}b")
-    #     else:
-    #         max_val = (1 << size) - 1
-    #         return format(value + max_val, f"0{size}b")
 
     def _value_to_bits(self, value: int) -> tuple[int, str]:
             """Возвращает (size, bits) по стандарту JPEG для DC-компонент."""
@@ -834,7 +803,7 @@ class JpegCompressor:
                 return bytes(int(bitstring[i:i+8], 2) for i in range(0, len(bitstring), 8))
 
             # 7. Image Data — Закодированные данные
-            #f.write(bits_to_bytes(encoded_data))
+            f.write(bits_to_bytes(encoded_data))
 
             # 8. EOI — End of Image
             f.write(b'\xFF\xD9')
@@ -879,10 +848,7 @@ class JpegCompressor:
         dict_dct_blocks = self._apply_dct(dict_blocks)
         dict_quant_blocks = self._apply_quantization(dict_dct_blocks)
         dc_components = self._dc_differentiation(dict_quant_blocks)
-        #one_zigzag_Y_array = self._zigzag_scanning(dict_quant_blocks['Y_quant'][0][0])
-        #one_rle_array = self._run_length_encoding(one_zigzag_Y_array[1:])
         ac_components = self._encode_rle_ac_components(dict_quant_blocks)
         huffman_tables = self._generate_all_huffman_tables()
         bitstream = self._huffman_encoding(dc_components, ac_components, huffman_tables)['bitstream']
-        #self._create_jpeg(bitstream, "data/"+compressed_image_name)
-            
+        self._create_jpeg(bitstream, "data/"+compressed_image_name)
