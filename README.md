@@ -48,7 +48,8 @@ pip install -r requirements.txt
 Create a `.env` file and copy the contents from `.env.example`:
 
 ```bash
-cp .env.example .env
+cp .env.example .env            # on Linux/Mac
+copy .env.example .env          # on Windows
 ```
 
 The `.env` file contains configuration for logging control.
