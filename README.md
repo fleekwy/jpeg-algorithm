@@ -32,9 +32,9 @@ cd jpeg-compressor
 ### 2. Create a virtual environment
 
 ```bash
-python -m venv venv
-source venv/bin/activate        # on Linux/Mac
-venv\Scripts\activate           # on Windows
+python -m venv .venv
+source .venv/bin/activate        # on Linux/Mac
+.venv\Scripts\activate           # on Windows
 ```
 
 ### 3. Install dependencies
