@@ -827,8 +827,6 @@ class JpegCompressor:
         """)
         
         try:
-            if not output_path.lower().endswith((".jpg", ".jpeg")):
-                output_path += ".jpg"
             with open(output_path, "wb") as f:
                 f.write(soi)
                 f.write(app0)
@@ -872,7 +870,7 @@ class JpegCompressor:
 # public
 
     @log_step
-    def compress(self, image_path: str, compressed_image_name: str, quality: int = 75):
+    def compress(self, image_path: str, compressed_image_name: str, quality: int = 75, show: str = 'n'):
         """Основной метод сжатия"""
         start_time = time.time()
 
@@ -888,8 +886,14 @@ class JpegCompressor:
         output_dir = "data"
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, compressed_image_name)
+        self.logger.debug(f"Путь для сохранения: {output_path}")
 
+        if not output_path.lower().endswith((".jpg", ".jpeg")):
+            output_path += ".jpg"
         self._create_jpeg(image_data, output_path)
         end_time = time.time()
         execution_time = end_time - start_time
         self.logger.info(f"Runtime compress with {quality=}: {execution_time:.2f} s")
+        if show == 'y':
+            compressed_image = Image.open(output_path)
+            compressed_image.show()
